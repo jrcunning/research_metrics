@@ -1,0 +1,386 @@
+---
+title: "Research Metrics Report"
+subtitle: |
+  John G. Shedd Aquarium
+output: html_document
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.height = 4, fig.width = 8)
+
+# Set cutoff date
+cutoff <- Sys.Date()
+#cutoff <- as.Date("2021-12-31")
+```
+
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(ggthemes)
+library(RColorBrewer)
+
+## ggplot theme
+theme_custom <- function() {
+  theme_few() +
+  theme(legend.title=element_blank(),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.justification = "center",
+        legend.text = element_text(size = 14),
+        axis.title = element_text(size = 18),
+        axis.text = element_text(size = 14),
+        strip.text = element_text(size = 18),
+        plot.title = element_text(size = 20, hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+}
+```
+
+```{r}
+# Import pre-2019 data
+pre2019 <- read_xlsx("data/pre2019_summary.xlsx")
+
+# Import 2019-2022 data (from first version of this system)
+df1 <- read_xlsx("data/research_metrics_2019-2022.xlsx") %>%
+  rename(Date = `Date of event`) %>%
+  mutate(Quantity = as.numeric(Quantity),
+         Effort = as.numeric(Effort))
+
+# Import 2022-2024 data (from when IT created new system)
+df2 <- read_xlsx("data/research_metrics_2022-2024.xlsx") %>%
+  select("ID", "Start time", "Completion time", "Email", "Name",
+         Department = "Select your Animal Care & Science department",
+         SingleMulti = "Was this a single-day or multi-day engagement?",
+         Date_engage = "What was the date of the engagement?",
+         Date_pub = "Publication Date",
+         Date_media = "Media Opportunity Date",
+         Category = "What was the engagement type?",
+         Citation, 
+         link_pub = "Publication Link",
+         link_media = "Media Link",
+         date_start = "What was the starting date of the engagement?",
+         date_end = "What was the ending date of the engagement?",
+         Effort = "Community / Stakeholder Engagement Effort",
+         qty_citsci = "Community / Stakeholder Engagement Quantity",
+         Description = "Briefly describe, or enter any notes for, this engagement")
+
+# Modify 2022-2024 data formatting to combine with 2019-2022 data
+df2 <- df2 %>%
+  mutate(qty_field = case_when(grepl("Field Research", Category) & SingleMulti == "Multi-day" ~ 
+                                 as.numeric(abs(difftime(date_start, date_end)) + 1),
+                               grepl("Field Research", Category) & SingleMulti == "Single-day" ~ 1,
+                               TRUE ~ NA)) %>%
+  mutate(Link = case_when(grepl("Publication", Category) ~ link_pub,
+                          grepl("Media", Category) ~ link_media),
+         Quantity = case_when(grepl("Field", Category) ~ qty_field,
+                              grepl("takeholder", Category) ~ qty_citsci),
+         Date = case_when(grepl("Field Research", Category) & SingleMulti == "Multi-day" ~ date_start,
+                          grepl("Field Research", Category) & SingleMulti == "Single-day" ~ Date_engage,
+                          grepl("Media", Category) ~ Date_media,
+                          grepl("Publication", Category) ~ Date_pub,
+                          TRUE ~ Date_engage),
+         Date = case_when(is.na(Date) ~ Date_engage,
+                          TRUE ~ Date),
+         Date = case_when(is.na(Date) ~ date_start,
+                          TRUE ~ Date),
+         Date = case_when(is.na(Date) ~ as.Date(`Start time`),
+                          TRUE ~ Date),
+         Effort = as.numeric(Effort)) %>%
+  select(ID, `Start time`, `Completion time`, Email, Name, Department, Date, Category,
+         Citation, Link, Effort, Quantity, Description)
+
+# Combine 2019-2024 data
+df <- bind_rows(df1, df2) %>%
+  select(ID, Email, Name, Department, Date , Category, Citation, 
+         Link, Effort, Quantity, Description, Program, Pillar) %>%
+  mutate(Effort = as.numeric(Effort), Quantity = as.numeric(Quantity),
+         Department = "Conservation Research")
+```
+
+```{r}
+# Import latest research metrics (from 2024 on -- downloaded from SharePoint)
+new_metrics_file <- list.files(path = "data", pattern = "new", full.names = TRUE)
+new_metrics <- read_xlsx(new_metrics_file) %>%
+  rename(Date = `Date of event`) %>%
+  select(Id, Email, Name, Department, Date, Category, Citation, Link, Effort, Quantity, Description, Program, Pillar)
+
+
+# Cutoff date (see above; set to today's date or end of quarter for report preparation)
+new_metrics <- new_metrics %>%
+   filter(Date <= cutoff)
+
+# Combine all data
+metrics <- bind_rows(df, new_metrics) %>%
+  # Clean numbers in Quantity column (e.g., remove non-numbers such as "~")
+  mutate(Quantity = as.numeric(str_extract(Quantity, "[0-9]+"))) %>%
+  # Bin events into years and quarters
+  mutate(Year = year(Date),
+         Quarter = paste0("Q", quarter(Date)))
+
+# Rename categories
+metrics <- metrics %>%
+  mutate(Category = case_when(grepl("Media", Category) ~ "Media opportunity",
+                               grepl("Field", Category) ~ "Field research",
+                               grepl("Presentation", Category) ~ "Presentation",
+                               grepl("Academic", Category) ~ "Presentation",
+                               grepl("takeholder", Category) ~ "Citizen/stakeholder engagement",
+                               grepl("Publication", Category) ~ "Publication",
+                              TRUE ~ Category))
+```
+
+```{r}
+# Citations
+library(scholar)
+
+## Get provided list of Haerther Center authors
+hc_authors <- read_tsv("data/authors.txt") %>% drop_na()
+
+## Get provided reference list of pre-2019 Haerther Center publications
+hc_oldrefs <- read_tsv("data/pre2019_publications.txt", col_names = "reference")
+
+## Get newer pubs that have been input into research metrics form
+hc_newrefs <- metrics %>%
+  filter(Category == "Publication") %>%
+  select(reference = Citation)
+
+## Create combined hc_references 
+hc_references <- bind_rows(hc_oldrefs, hc_newrefs)
+
+# Get publication list for individual author
+#get_publications(hc_authors$scholar_id[14])
+
+# Get full publication list for each author from Google Scholar
+all_pubs <- hc_authors %>%
+  mutate(all_pubs = map(scholar_id, ~ get_publications(.))) %>%
+  unnest(all_pubs)
+
+# Subset only Haerther Center publications (since 2012) using fuzzy text matching of titles to the provided reference list
+hc_pubs <- all_pubs %>%
+  mutate(hc_affil = map_lgl(title, ~ any(agrepl(., hc_references$reference)))) %>%
+  filter(hc_affil)  # select only entries with titles that matched
+
+# Remove duplicated publications based on title (e.g., multiple Haerther Center authors on same publication)
+hc_pubs <- hc_pubs %>% 
+  distinct(title, .keep_all = TRUE)
+
+# Calculate departmental h-index
+cites <- hc_pubs %>% 
+  arrange(-cites) %>%
+  pull(cites)
+
+h.index <- tail(which(cites >= seq_along(cites)), 1)
+i10.index <- sum(cites >= 10)
+
+# Summarize citation counts with today's date
+todays_totals <- hc_pubs %>%
+  summarise(date = Sys.Date(),
+            total_pubs = nrow(hc_references),
+            total_cites = sum(cites),
+            h.index = h.index,
+            i10.index = i10.index)
+
+# Append today's totals to output file
+write.table(todays_totals, file = "data/citation_counts.txt", sep = "\t", quote = F, 
+            row.names = F, col.names = F, append = T)
+
+# Import citation count data
+cites <- read_tsv("data/citation_counts.txt") %>%
+  filter(date <= cutoff)
+```
+
+```{r}
+latest <- tail(cites, 1)
+```
+
+*****
+
+#### *Current publication metrics:*
+##### **Publications:** `r latest$total_pubs`  
+##### **Citations:** `r latest$total_cites`  
+##### **h-index:** `r latest$h_index`  
+##### **i10-index:** `r latest$i10_index` 
+
+*****
+
+```{r}
+pubs <- metrics %>%
+  filter(Category == "Publication")
+write_csv(pubs, file = "pubs.csv")
+
+# Publications
+pubsumm <- metrics %>%
+  filter(Category == "Publication") %>%
+  group_by(Year, Quarter) %>%
+  summarize(Quantity = n()) %>%
+  bind_rows(filter(pre2019, Category == "Publications")) %>%
+  select(Year, Quarter, Quantity) %>%
+  ungroup() %>%
+  complete(Year, Quarter, fill = list(Quantity = 0))
+
+ggplot(pubsumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.25) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Scientific Publications")
+```
+
+```{r}
+# Tidy and calculate new citations by quarter
+cites <- cites %>%
+  mutate(Year = year(date),
+         Quarter = paste0("Q", quarter(date))) %>%
+  group_by(Year, Quarter) %>%
+  distinct(date, .keep_all = TRUE) %>%       # Remove duplicated dates
+  filter(date == max(date)) %>%              # Get latest date with available data in each quarter
+  ungroup() %>%
+  arrange(Year, Quarter) %>%                    # Order by year and quarter
+  mutate(Citations = total_cites - lag(total_cites)) %>%  # Calculate number of new citations in quarter
+  select(Year, Quarter, Citations) %>%
+  ungroup() %>%
+  complete(Year = full_seq(c(2019, max(Year)), 1), Quarter, fill = list(Citations = 0))
+  
+# Combine with pre2019 data
+citesumm <- pre2019 %>%
+  filter(Category == "Citations") %>%
+  spread(Category, Quantity) %>%
+  bind_rows(cites)
+
+ggplot(citesumm, aes(x = Quarter, y = Citations, fill = factor(Year))) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Citations == 0, "", Citations)), color = "white", nudge_y = -5) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Citations")
+```
+
+```{r}
+# Media opportunities
+mediasumm <- metrics %>%
+  filter(Category == "Media opportunity") %>%
+  group_by(Year, Quarter) %>%
+  summarize(Quantity = n()) %>%
+  bind_rows(filter(pre2019, Category == "Media opportunity")) %>%
+  select(Year, Quarter, Quantity) %>%
+  ungroup() %>%
+  complete(Year, Quarter, fill = list(Quantity = 0))
+  
+
+ggplot(mediasumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.5) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Print/Media Opportunities")
+```
+
+
+```{r}
+# Presentations
+pressumm <- metrics %>%
+  filter(Category == "Presentation") %>%
+  group_by(Year, Quarter) %>%
+  summarize(Quantity = n()) %>%
+  bind_rows(filter(pre2019, Category == "Presentation")) %>%
+  select(Year, Quarter, Quantity) %>%
+  ungroup() %>%
+  complete(Year, Quarter, fill = list(Quantity = 0))
+
+ggplot(pressumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.75) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Presentations")
+```
+
+
+```{r}
+# Total disseminations
+dissem <- bind_rows(`Scientific Pubs.        ` = pubsumm, 
+                    `Print/Media        ` = mediasumm,
+                    `Presentations        ` = pressumm,
+                    .id = "Category") %>%
+  mutate(QY = interaction(Quarter, Year))
+
+ggplot(dissem, aes(x = Quarter, y = Quantity, fill = Category)) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(y = Quantity - 1, label = ifelse(Quantity == 0, "", Quantity)), 
+            position = "stack", color = "white") +
+  theme_custom() +
+  theme(legend.spacing.x = unit(1, "mm"),
+        legend.box.margin=margin(-30,0,0,0)) +
+  labs(x = "", y = "", title = "Number of Dissemination Outputs")
+```
+
+
+```{r}
+# Citizen/stakeholder engagement -- unique individuals
+
+engagement.unique.ind <- metrics %>%
+  filter(Category == "Citizen/stakeholder engagement") %>%
+  group_by(Year, Quarter) %>%
+  summarize(Quantity = sum(Quantity, na.rm = TRUE)) %>%
+  bind_rows(filter(pre2019, Category == "Citizen/stakeholder engagement")) %>%
+  select(Year, Quarter, Quantity) %>%
+  ungroup() %>%
+  complete(Year, Quarter, fill = list(Quantity = 0))
+
+ggplot(engagement.unique.ind, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -10) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Citizen Scientists/Stakeholders")
+```
+
+```{r}
+# Total engagement effort in person*hours
+
+engagement.person.hours <- metrics %>%
+  filter(Category == "Citizen/stakeholder engagement") %>%
+  group_by(Year, Quarter) %>%
+  summarize(Quantity = sum(Effort, na.rm = TRUE)) %>%
+  select(Year, Quarter, Quantity) %>%
+  ungroup() %>%
+  complete(Year, Quarter, fill = list(Quantity = 0))
+
+ggplot(engagement.person.hours, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -200) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "Total person*hours", title = "Citizen/Stakeholder Engagement Effort")
+```
+
+
+```{r}
+# Field days
+
+fdaysumm <- metrics %>%
+  filter(Category == "Field research") %>%
+  group_by(Year, Quarter) %>%
+  summarize(Quantity = sum(Quantity, na.rm = TRUE)) %>%
+  bind_rows(filter(pre2019, Category == "Field research")) %>%
+  select(Year, Quarter, Quantity) %>%
+  ungroup() %>%
+  complete(Year, Quarter, fill = list(Quantity = 0))
+
+ggplot(fdaysumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
+  facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -5) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Field Days")
+```
