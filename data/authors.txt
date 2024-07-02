@@ -1,0 +1,20 @@
+last_name	first_name	scholar_id
+Knapp	Chuck	qA1rXb8AAAAJ
+Berzins	Ilze	
+Tewfik	Alex	gCOl8vsAAAAJ
+Loh	Tse-Lynn	3f0JulwAAAAJ
+David	Solomon	haoxpBMAAAAJ
+Willink	Phil	zuUEUCYAAAAJ
+Larson	Eric	bv0ezf0AAAAJ
+Kough	Andrew	QzwgKJ0AAAAJ
+Murchie	Karen	Sch8OYsAAAAJ
+Kessel	Steve	9rEgdxQAAAAJ
+Cunning	Ross	64k3A4EAAAAJ
+Casper	Andy	VZfzecEAAAAJ
+Happel	Austin	KxsD8eYAAAAJ
+Waterhouse	Lynn	Tmf2DzoAAAAJ
+Inoue	Kentaro	bJfaIC0AAAAJ
+Youngquist	Melissa	3BR-ipgAAAAJ
+Colborne	Scott	wA--GIEAAAAJ
+Matsuda Shayle  WLwHjOIAAAAJ
+Quintana Yasmin h34C5hydhJYC
