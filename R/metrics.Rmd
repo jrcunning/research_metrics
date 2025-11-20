@@ -227,6 +227,16 @@ ggplot(pubsumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   theme_custom() +
   theme(legend.position = "none") +
   labs(x = "", y = "", title = "Number of Scientific Publications")
+
+pubsumm %>% 
+  group_by(Year) %>%
+  summarize(Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.75) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Scientific Publications")
 ```
 
 ```{r}
@@ -257,6 +267,16 @@ ggplot(citesumm, aes(x = Quarter, y = Citations, fill = factor(Year))) +
   theme_custom() +
   theme(legend.position = "none") +
   labs(x = "", y = "", title = "Number of Citations")
+
+citesumm %>%
+  group_by(Year) %>%
+  summarize(Citations = sum(Citations)) %>%
+  ggplot(aes(x = Year, y = Citations, fill = factor(Year))) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Citations == 0, "", Citations)), color = "white", nudge_y = -20) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Citations")
 ```
 
 ```{r}
@@ -273,6 +293,16 @@ mediasumm <- metrics %>%
 
 ggplot(mediasumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.5) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Print/Media Opportunities")
+
+mediasumm %>%
+  group_by(Year) %>%
+  summarize(Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.5) +
   theme_custom() +
@@ -299,6 +329,16 @@ ggplot(pressumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   theme_custom() +
   theme(legend.position = "none") +
   labs(x = "", y = "", title = "Number of Presentations")
+
+pressumm %>%
+  group_by(Year) %>%
+  summarize(Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.75) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Presentations")
 ```
 
 
@@ -312,6 +352,19 @@ dissem <- bind_rows(`Scientific Pubs.        ` = pubsumm,
 
 ggplot(dissem, aes(x = Quarter, y = Quantity, fill = Category)) +
   facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(y = Quantity - 1, label = ifelse(Quantity == 0, "", Quantity)), 
+            position = "stack", color = "white") +
+  theme_custom() +
+  theme(legend.spacing.x = unit(1, "mm"),
+        legend.box.margin=margin(-30,0,0,0)) +
+  labs(x = "", y = "", title = "Number of Dissemination Outputs")
+
+
+dissem %>%
+  group_by(Year, Category) %>%
+  summarize(Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Year, y = Quantity, fill = Category)) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(y = Quantity - 1, label = ifelse(Quantity == 0, "", Quantity)), 
             position = "stack", color = "white") +
@@ -341,6 +394,16 @@ ggplot(engagement.unique.ind, aes(x = Quarter, y = Quantity, fill = factor(Year)
   theme_custom() +
   theme(legend.position = "none") +
   labs(x = "", y = "", title = "Number of Citizen Scientists/Stakeholders")
+
+engagement.unique.ind %>%
+  group_by(Year) %>%
+  summarize(Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -10) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Citizen Scientists/Stakeholders")
 ```
 
 ```{r}
@@ -356,6 +419,17 @@ engagement.person.hours <- metrics %>%
 
 ggplot(engagement.person.hours, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   facet_grid(~ Year) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -200) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "Total person*hours", title = "Citizen/Stakeholder Engagement Effort")
+
+
+engagement.person.hours %>%
+  group_by(Year) %>%
+  summarize(Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -200) +
   theme_custom() +
@@ -383,4 +457,16 @@ ggplot(fdaysumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   theme_custom() +
   theme(legend.position = "none") +
   labs(x = "", y = "", title = "Number of Field Days")
+
+fdaysumm %>%
+  group_by(Year) %>%
+  summarize(Quantity = sum(Quantity)) %>%
+  ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -5) +
+  theme_custom() +
+  theme(legend.position = "none") +
+  labs(x = "", y = "", title = "Number of Field Days")
+
+
 ```
