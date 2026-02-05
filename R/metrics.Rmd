@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.height
 
 # Set cutoff date
 cutoff <- Sys.Date()
-#cutoff <- as.Date("2024-12-31")
+#cutoff <- as.Date("2025-12-31")
 ```
 
 
@@ -102,7 +102,7 @@ df <- bind_rows(df1, df2) %>%
 
 ```{r}
 # Import latest research metrics (from 2024 on -- downloaded from SharePoint)
-new_metrics_file <- list.files(path = "data", pattern = "new", full.names = TRUE)
+new_metrics_file <- list.files(path = "data", pattern = "new 1", full.names = TRUE)
 new_metrics <- read_xlsx(new_metrics_file) %>%
   rename(Date = `Date of event`) %>%
   select(Id, Email, Name, Department, Date, Category, Citation, Link, Effort, Quantity, Description, Program, Pillar)
@@ -126,7 +126,8 @@ metrics <- metrics %>%
                                grepl("Field", Category) ~ "Field research",
                                grepl("Presentation", Category) ~ "Presentation",
                                grepl("Academic", Category) ~ "Presentation",
-                               grepl("takeholder", Category) ~ "Citizen/stakeholder engagement",
+                               grepl("takeholder", Category) ~ "Community engagement",
+                               grepl("Community", Category) ~ "Community engagement",
                                grepl("Publication", Category) ~ "Publication",
                               TRUE ~ Category))
 ```
@@ -164,7 +165,9 @@ hc_pubs <- all_pubs %>%
 
 # Remove duplicated publications based on title (e.g., multiple Haerther Center authors on same publication)
 hc_pubs <- hc_pubs %>% 
-  distinct(title, .keep_all = TRUE)
+  filter(!is.na(year)) %>%
+  filter(!(duplicated(cid) & duplicated(tolower(title))))
+  
 
 # Calculate departmental h-index
 cites <- hc_pubs %>% 
@@ -177,7 +180,7 @@ i10.index <- sum(cites >= 10)
 # Summarize citation counts with today's date
 todays_totals <- hc_pubs %>%
   summarise(date = Sys.Date(),
-            total_pubs = nrow(hc_references),
+            total_pubs = nrow(hc_pubs),
             total_cites = sum(cites),
             h.index = h.index,
             i10.index = i10.index)
@@ -206,9 +209,6 @@ latest <- tail(cites, 1)
 *****
 
 ```{r}
-pubs <- metrics %>%
-  filter(Category == "Publication")
-write_csv(pubs, file = "pubs.csv")
 
 # Publications
 pubsumm <- metrics %>%
@@ -379,10 +379,10 @@ dissem %>%
 # Citizen/stakeholder engagement -- unique individuals
 
 engagement.unique.ind <- metrics %>%
-  filter(Category == "Citizen/stakeholder engagement") %>%
+  filter(Category == "Community engagement") %>%
   group_by(Year, Quarter) %>%
   summarize(Quantity = sum(Quantity, na.rm = TRUE)) %>%
-  bind_rows(filter(pre2019, Category == "Citizen/stakeholder engagement")) %>%
+  bind_rows(filter(pre2019, Category == "Community engagement")) %>%
   select(Year, Quarter, Quantity) %>%
   ungroup() %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
@@ -393,7 +393,7 @@ ggplot(engagement.unique.ind, aes(x = Quarter, y = Quantity, fill = factor(Year)
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -10) +
   theme_custom() +
   theme(legend.position = "none") +
-  labs(x = "", y = "", title = "Number of Citizen Scientists/Stakeholders")
+  labs(x = "", y = "", title = "Number of people engaged")
 
 engagement.unique.ind %>%
   group_by(Year) %>%
@@ -403,39 +403,9 @@ engagement.unique.ind %>%
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -10) +
   theme_custom() +
   theme(legend.position = "none") +
-  labs(x = "", y = "", title = "Number of Citizen Scientists/Stakeholders")
+  labs(x = "", y = "", title = "Number of people engaged")
 ```
 
-```{r}
-# Total engagement effort in person*hours
-
-engagement.person.hours <- metrics %>%
-  filter(Category == "Citizen/stakeholder engagement") %>%
-  group_by(Year, Quarter) %>%
-  summarize(Quantity = sum(Effort, na.rm = TRUE)) %>%
-  select(Year, Quarter, Quantity) %>%
-  ungroup() %>%
-  complete(Year, Quarter, fill = list(Quantity = 0))
-
-ggplot(engagement.person.hours, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
-  facet_grid(~ Year) +
-  geom_bar(stat = "identity", alpha = 0.7) +
-  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -200) +
-  theme_custom() +
-  theme(legend.position = "none") +
-  labs(x = "", y = "Total person*hours", title = "Citizen/Stakeholder Engagement Effort")
-
-
-engagement.person.hours %>%
-  group_by(Year) %>%
-  summarize(Quantity = sum(Quantity)) %>%
-  ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
-  geom_bar(stat = "identity", alpha = 0.7) +
-  geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -200) +
-  theme_custom() +
-  theme(legend.position = "none") +
-  labs(x = "", y = "Total person*hours", title = "Citizen/Stakeholder Engagement Effort")
-```
 
 
 ```{r}
