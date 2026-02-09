@@ -438,7 +438,7 @@ engagement.unique.ind <- metrics %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
 
 
-# Some numbers are super high?!?
+# Some numbers are super high
 # metrics %>%
 #   filter(Category == "Community engagement") %>%
 #   filter(Quantity > 1000)
@@ -467,6 +467,12 @@ engagement.unique.ind %>%
   theme(legend.position = "none") +
   scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of people engaged")
+
+
+
+# metrics %>%
+#   filter(Category == "Community engagement") %>%
+#   arrange(-Quantity)
 ```
 
 
@@ -482,6 +488,8 @@ fdaysumm <- metrics %>%
   select(Year, Quarter, Quantity) %>%
   ungroup() %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
+
+
 
 # Plot field days quarterly
 ggplot(fdaysumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
