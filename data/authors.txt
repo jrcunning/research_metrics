@@ -1,6 +1,9 @@
 last_name	first_name	scholar_id
 Knapp	Chuck	qA1rXb8AAAAJ
 Berzins	Ilze	
+Willink	Philip	zuUEUCYAAAAJ
+Larson	Eric	bv0ezf0AAAAJ
+Dahlgren	Craig	AYVy81IAAAAJ
 Tewfik	Alex	gCOl8vsAAAAJ
 Loh	Tse-Lynn	3f0JulwAAAAJ
 David	Solomon	haoxpBMAAAAJ

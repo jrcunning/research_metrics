@@ -39,6 +39,7 @@ theme_custom <- function() {
 }
 ```
 
+# Import data
 ```{r}
 # Import pre-2019 data
 pre2019 <- read_xlsx("data/pre2019_summary.xlsx")
@@ -129,9 +130,11 @@ metrics <- metrics %>%
                                grepl("takeholder", Category) ~ "Community engagement",
                                grepl("Community", Category) ~ "Community engagement",
                                grepl("Publication", Category) ~ "Publication",
-                              TRUE ~ Category))
+                               grepl("active meeting", Category) ~ "Presentation",
+                               TRUE ~ Category))
 ```
 
+# Citations
 ```{r}
 # Citations
 library(scholar)
@@ -149,6 +152,19 @@ hc_newrefs <- metrics %>%
 
 ## Create combined hc_references 
 hc_references <- bind_rows(hc_oldrefs, hc_newrefs)
+# Dedupe combined references
+library(stringdist)
+hc_references <- hc_references %>%
+  { g <- cutree(
+      hclust(
+        as.dist(stringdistmatrix(.$reference, method = "jw")),
+        method = "average"
+      ),
+      h = 0.10
+    )
+    .[!duplicated(g), ]
+  }
+
 
 # Get publication list for individual author
 #get_publications(hc_authors$scholar_id[14])
@@ -208,11 +224,25 @@ latest <- tail(cites, 1)
 
 *****
 
+# Publications
 ```{r}
+# Filter out duplicated publications
+library(stringdist)
+nondupes <- metrics %>%
+  filter(Category == "Publication") %>%
+  { g <- cutree(hclust(as.dist(stringdistmatrix(.$Citation, method = "jw")), "average"), h = 0.10)
+    .[!duplicated(g), ] } 
+
+
+#dupes
+# dupes <- metrics %>%
+#   filter(Category == "Publication") %>%
+#   { g <- cutree(hclust(as.dist(stringdistmatrix(.$Citation, method = "jw")), 
+#                        method = "average"), h = 0.10)
+#     .[duplicated(g) | duplicated(g, fromLast = TRUE), ] }
 
 # Publications
-pubsumm <- metrics %>%
-  filter(Category == "Publication") %>%
+pubsumm <- nondupes %>%
   group_by(Year, Quarter) %>%
   summarize(Quantity = n()) %>%
   bind_rows(filter(pre2019, Category == "Publications")) %>%
@@ -220,14 +250,17 @@ pubsumm <- metrics %>%
   ungroup() %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
 
+# Plot publications Quarterly
 ggplot(pubsumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   facet_grid(~ Year) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.25) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 7)) +
   labs(x = "", y = "", title = "Number of Scientific Publications")
 
+# Plot publications by Year
 pubsumm %>% 
   group_by(Year) %>%
   summarize(Quantity = sum(Quantity)) %>%
@@ -236,9 +269,11 @@ pubsumm %>%
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.75) +
   theme_custom() +
   theme(legend.position = "none") +
+  scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of Scientific Publications")
 ```
 
+# Citations
 ```{r}
 # Tidy and calculate new citations by quarter
 cites <- cites %>%
@@ -260,14 +295,17 @@ citesumm <- pre2019 %>%
   spread(Category, Quantity) %>%
   bind_rows(cites)
 
+# Plot Citations quarterly
 ggplot(citesumm, aes(x = Quarter, y = Citations, fill = factor(Year))) +
   facet_grid(~ Year) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Citations == 0, "", Citations)), color = "white", nudge_y = -5) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 7)) +
   labs(x = "", y = "", title = "Number of Citations")
 
+# Plot Citations annually
 citesumm %>%
   group_by(Year) %>%
   summarize(Citations = sum(Citations)) %>%
@@ -276,9 +314,11 @@ citesumm %>%
   geom_text(aes(label = ifelse(Citations == 0, "", Citations)), color = "white", nudge_y = -20) +
   theme_custom() +
   theme(legend.position = "none") +
+  scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of Citations")
 ```
 
+# Media opportunities
 ```{r}
 # Media opportunities
 mediasumm <- metrics %>%
@@ -290,15 +330,17 @@ mediasumm <- metrics %>%
   ungroup() %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
   
-
+# Plot media opps quarterly
 ggplot(mediasumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   facet_grid(~ Year) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.5) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 7)) +
   labs(x = "", y = "", title = "Number of Print/Media Opportunities")
 
+# Plot media opps annually
 mediasumm %>%
   group_by(Year) %>%
   summarize(Quantity = sum(Quantity)) %>%
@@ -307,10 +349,11 @@ mediasumm %>%
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.5) +
   theme_custom() +
   theme(legend.position = "none") +
+  scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of Print/Media Opportunities")
 ```
 
-
+# Presentations
 ```{r}
 # Presentations
 pressumm <- metrics %>%
@@ -322,14 +365,17 @@ pressumm <- metrics %>%
   ungroup() %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
 
+# Plot Presentations Quarterly
 ggplot(pressumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   facet_grid(~ Year) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.75) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 7)) +
   labs(x = "", y = "", title = "Number of Presentations")
 
+# Plot Presentations Annually
 pressumm %>%
   group_by(Year) %>%
   summarize(Quantity = sum(Quantity)) %>%
@@ -338,10 +384,11 @@ pressumm %>%
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -0.75) +
   theme_custom() +
   theme(legend.position = "none") +
+  scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of Presentations")
 ```
 
-
+# Total dissemination outputs
 ```{r}
 # Total disseminations
 dissem <- bind_rows(`Scientific Pubs.        ` = pubsumm, 
@@ -350,17 +397,19 @@ dissem <- bind_rows(`Scientific Pubs.        ` = pubsumm,
                     .id = "Category") %>%
   mutate(QY = interaction(Quarter, Year))
 
-ggplot(dissem, aes(x = Quarter, y = Quantity, fill = Category)) +
-  facet_grid(~ Year) +
-  geom_bar(stat = "identity", alpha = 0.7) +
-  geom_text(aes(y = Quantity - 1, label = ifelse(Quantity == 0, "", Quantity)), 
-            position = "stack", color = "white") +
-  theme_custom() +
-  theme(legend.spacing.x = unit(1, "mm"),
-        legend.box.margin=margin(-30,0,0,0)) +
-  labs(x = "", y = "", title = "Number of Dissemination Outputs")
+# Plot disseminations quarterly
+# ggplot(dissem, aes(x = Quarter, y = Quantity, fill = Category)) +
+#   facet_grid(~ Year) +
+#   geom_bar(stat = "identity", alpha = 0.7) +
+#   geom_text(aes(y = Quantity - 1, label = ifelse(Quantity == 0, "", Quantity)), 
+#             position = "stack", color = "white") +
+#   theme_custom() +
+#   theme(legend.spacing.x = unit(1, "mm"),
+#         legend.box.margin=margin(-30,0,0,0),
+#         axis.text.x = element_text(size = 7)) +
+#   labs(x = "", y = "", title = "Number of Dissemination Outputs")
 
-
+# Plot disseminations annually
 dissem %>%
   group_by(Year, Category) %>%
   summarize(Quantity = sum(Quantity)) %>%
@@ -371,12 +420,13 @@ dissem %>%
   theme_custom() +
   theme(legend.spacing.x = unit(1, "mm"),
         legend.box.margin=margin(-30,0,0,0)) +
+  scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of Dissemination Outputs")
 ```
 
-
+# Community engagement
 ```{r}
-# Citizen/stakeholder engagement -- unique individuals
+# Community engagement -- unique individuals
 
 engagement.unique.ind <- metrics %>%
   filter(Category == "Community engagement") %>%
@@ -387,14 +437,26 @@ engagement.unique.ind <- metrics %>%
   ungroup() %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
 
+
+# Some numbers are super high?!?
+# metrics %>%
+#   filter(Category == "Community engagement") %>%
+#   filter(Quantity > 1000)
+# 
+# engagement.unique.ind %>%
+#   arrange(-Quantity)
+
+# Plot community engagement quarterly
 ggplot(engagement.unique.ind, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   facet_grid(~ Year) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -10) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 7)) +
   labs(x = "", y = "", title = "Number of people engaged")
 
+# Plot community engagement annually
 engagement.unique.ind %>%
   group_by(Year) %>%
   summarize(Quantity = sum(Quantity)) %>%
@@ -403,11 +465,12 @@ engagement.unique.ind %>%
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -10) +
   theme_custom() +
   theme(legend.position = "none") +
+  scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of people engaged")
 ```
 
 
-
+# Field days
 ```{r}
 # Field days
 
@@ -420,14 +483,17 @@ fdaysumm <- metrics %>%
   ungroup() %>%
   complete(Year, Quarter, fill = list(Quantity = 0))
 
+# Plot field days quarterly
 ggplot(fdaysumm, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
   facet_grid(~ Year) +
   geom_bar(stat = "identity", alpha = 0.7) +
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -5) +
   theme_custom() +
-  theme(legend.position = "none") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 7)) +
   labs(x = "", y = "", title = "Number of Field Days")
 
+# Plot field days annually
 fdaysumm %>%
   group_by(Year) %>%
   summarize(Quantity = sum(Quantity)) %>%
@@ -436,6 +502,7 @@ fdaysumm %>%
   geom_text(aes(label = ifelse(Quantity == 0, "", Quantity)), color = "white", nudge_y = -5) +
   theme_custom() +
   theme(legend.position = "none") +
+  scale_x_continuous(breaks = function(x) round(seq(min(x), max(x), by = 1), 0)) +
   labs(x = "", y = "", title = "Number of Field Days")
 
 
