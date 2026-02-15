@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.height
 
 # Set cutoff date
 cutoff <- Sys.Date()
-#cutoff <- as.Date("2025-12-31")
+cutoff <- as.Date("2025-12-31")
 ```
 
 
