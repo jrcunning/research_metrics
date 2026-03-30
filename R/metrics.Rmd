@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.height
 
 # Set cutoff date
 cutoff <- Sys.Date()
-cutoff <- as.Date("2025-12-31")
+#cutoff <- as.Date("2025-12-31")
 ```
 
 
@@ -127,8 +127,9 @@ metrics <- metrics %>%
                                grepl("Field", Category) ~ "Field research",
                                grepl("Presentation", Category) ~ "Presentation",
                                grepl("Academic", Category) ~ "Presentation",
-                               grepl("takeholder", Category) ~ "Community engagement",
-                               grepl("Community", Category) ~ "Community engagement",
+                               grepl("takeholder", Category) ~ "Capacity Sharing & Training",
+                               grepl("Community", Category) ~ "Capacity Sharing & Training",
+                               grepl("Capacity", Category) ~ "Capacity Sharing & Training",
                                grepl("Publication", Category) ~ "Publication",
                                grepl("active meeting", Category) ~ "Presentation",
                                TRUE ~ Category))
@@ -424,12 +425,13 @@ dissem %>%
   labs(x = "", y = "", title = "Number of Dissemination Outputs")
 ```
 
-# Community engagement
+# Capacity Sharing & Training
 ```{r}
-# Community engagement -- unique individuals
+# New title: Capacity Sharing & Training
+# Old title: Community engagement -- unique individuals
 
 engagement.unique.ind <- metrics %>%
-  filter(Category == "Community engagement") %>%
+  filter(Category == "Capacity Sharing & Training") %>%
   group_by(Year, Quarter) %>%
   summarize(Quantity = sum(Quantity, na.rm = TRUE)) %>%
   bind_rows(filter(pre2019, Category == "Community engagement")) %>%
