@@ -1,0 +1,588 @@
+---
+title: "Research Metrics Report: Overhaul Draft"
+subtitle: |
+  John G. Shedd Aquarium
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+params:
+  cutoff: !r Sys.Date()
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.height = 4,
+  fig.width = 8
+)
+
+cutoff <- as.Date(params$cutoff)
+```
+
+```{r libraries}
+library(readxl)
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(ggthemes)
+library(RColorBrewer)
+library(stringdist)
+
+theme_custom <- function() {
+  theme_few() +
+    theme(
+      legend.title = element_blank(),
+      legend.position = "bottom",
+      legend.direction = "horizontal",
+      legend.justification = "center",
+      legend.text = element_text(size = 12),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 11),
+      strip.text = element_text(size = 13),
+      plot.title = element_text(size = 16, hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+}
+
+quarter_levels <- paste0("Q", 1:4)
+
+clean_number <- function(x) {
+  as.numeric(str_extract(as.character(x), "-?[0-9]+\\.?[0-9]*"))
+}
+
+first_non_missing_date <- function(...) {
+  dates <- list(...)
+  out <- as.Date(rep(NA, length(dates[[1]])))
+  for (date_col in dates) {
+    date_col <- as.Date(date_col)
+    out <- coalesce(out, date_col)
+  }
+  out
+}
+
+standardize_category <- function(category) {
+  category_norm <- str_squish(str_replace_all(category, "\u00a0", " "))
+
+  case_when(
+    str_detect(category_norm, regex("citizen/stakeholder|community engagement|community / stakeholder engagement|capacity sharing|capacity", ignore_case = TRUE)) ~ "Capacity Sharing & Training",
+    str_detect(category_norm, regex("media", ignore_case = TRUE)) ~ "Media opportunity",
+    str_detect(category_norm, regex("field research|field days|field", ignore_case = TRUE)) ~ "Field research",
+    str_detect(category_norm, regex("publication|publications", ignore_case = TRUE)) ~ "Publication",
+    str_detect(category_norm, regex("presentation|academic|conference|active meeting|meeting|tour", ignore_case = TRUE)) ~ "Presentation",
+    TRUE ~ category_norm
+  )
+}
+
+metric_summary <- function(data, category, value = c("n", "quantity"), pre2019_category = category) {
+  value <- match.arg(value)
+
+  current <- data %>%
+    filter(Category == category) %>%
+    group_by(Year, Quarter) %>%
+    summarise(
+      Quantity = if (value == "n") n() else sum(Quantity, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  historical <- pre2019 %>%
+    filter(Category == pre2019_category) %>%
+    transmute(Year, Quarter, Quantity = clean_number(Quantity))
+
+  bind_rows(current, historical) %>%
+    mutate(Quarter = factor(Quarter, levels = quarter_levels)) %>%
+    complete(
+      Year = full_seq(range(Year, na.rm = TRUE), 1),
+      Quarter = factor(quarter_levels, levels = quarter_levels),
+      fill = list(Quantity = 0)
+    ) %>%
+    arrange(Year, Quarter)
+}
+
+plot_quarterly_bars <- function(summary_data, title, label_nudge) {
+  ggplot(summary_data, aes(x = Quarter, y = Quantity, fill = factor(Year))) +
+    facet_grid(~ Year) +
+    geom_col(alpha = 0.75) +
+    geom_text(
+      aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+      color = "white",
+      nudge_y = label_nudge,
+      size = 3
+    ) +
+    theme_custom() +
+    theme(legend.position = "none", axis.text.x = element_text(size = 7)) +
+    labs(x = "", y = "", title = title)
+}
+
+plot_annual_bars <- function(summary_data, title, label_nudge) {
+  summary_data %>%
+    group_by(Year) %>%
+    summarise(Quantity = sum(Quantity, na.rm = TRUE), .groups = "drop") %>%
+    ggplot(aes(x = Year, y = Quantity, fill = factor(Year))) +
+    geom_col(alpha = 0.75) +
+    geom_text(
+      aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+      color = "white",
+      nudge_y = label_nudge,
+      size = 3
+    ) +
+    theme_custom() +
+    theme(legend.position = "none") +
+    scale_x_continuous(breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 1)) +
+    labs(x = "", y = "", title = title)
+}
+
+dedupe_references <- function(data, reference_col = Citation, threshold = 0.10) {
+  data <- data %>%
+    filter(!is.na({{ reference_col }}), {{ reference_col }} != "")
+
+  if (nrow(data) < 2) {
+    return(data)
+  }
+
+  groups <- data %>%
+    pull({{ reference_col }}) %>%
+    stringdistmatrix(method = "jw") %>%
+    as.dist() %>%
+    hclust(method = "average") %>%
+    cutree(h = threshold)
+
+  data[!duplicated(groups), ]
+}
+```
+
+# Import And Normalize Data
+
+```{r import-data}
+pre2019 <- read_xlsx("data/pre2019_summary.xlsx") %>%
+  mutate(
+    Year = as.integer(Year),
+    Quarter = factor(Quarter, levels = quarter_levels),
+    Quantity = clean_number(Quantity)
+  )
+
+metrics_2019_2022 <- read_xlsx("data/research_metrics_2019-2022.xlsx") %>%
+  transmute(
+    Source = "2019-2022 Microsoft Form",
+    ID = as.character(ID),
+    Email,
+    Name,
+    Department,
+    Date = as.Date(`Date of event`),
+    RawCategory = Category,
+    Category = standardize_category(Category),
+    Citation,
+    Link,
+    Effort = clean_number(Effort),
+    Quantity = clean_number(Quantity),
+    FieldDays = if_else(Category == "Field research", Quantity, NA_real_),
+    FieldPersonDays = if_else(Category == "Field research", Quantity, NA_real_),
+    FieldConservationResearch = if_else(Category == "Field research", Quantity, NA_real_),
+    FieldAnimalHealth = NA_real_,
+    FieldAnimalCare = NA_real_,
+    FieldOtherDepartments = NA_real_,
+    Description,
+    Program,
+    Pillar
+  )
+
+metrics_2022_2024_raw <- read_xlsx(
+  "data/research_metrics_2022-2024.xlsx",
+  col_types = c(rep("guess", 8), "text", "text", rep("guess", 26))
+)
+
+metrics_2022_2024 <- metrics_2022_2024_raw %>%
+  transmute(
+    Source = "2022-2024 IT Form",
+    ID = as.character(ID),
+    Email,
+    Name,
+    Department = `Select your Animal Care & Science department`,
+    SingleMulti = `Was this a single-day or multi-day engagement?`,
+    DateEngagement = as.Date(`What was the date of the engagement?`),
+    DateStart = as.Date(`What was the starting date of the engagement?`),
+    DateEnd = as.Date(`What was the ending date of the engagement?`),
+    DatePublication = as.Date(`Publication Date`),
+    DateMedia = as.Date(`Media Opportunity Date`),
+    RawCategory = `What was the engagement type?`,
+    Category = standardize_category(RawCategory),
+    Citation,
+    Link = case_when(
+      Category == "Publication" ~ `Publication Link`,
+      Category == "Media opportunity" ~ `Media Link`,
+      TRUE ~ NA_character_
+    ),
+    Effort = clean_number(`Community / Stakeholder Engagement Effort`),
+    Quantity = case_when(
+      Category == "Field research" & SingleMulti == "Multi-day" ~ as.numeric(DateEnd - DateStart) + 1,
+      Category == "Field research" & SingleMulti == "Single-day" ~ 1,
+      Category == "Capacity Sharing & Training" ~ clean_number(`Community / Stakeholder Engagement Quantity`),
+      TRUE ~ NA_real_
+    ),
+    FieldDays = if_else(Category == "Field research", Quantity, NA_real_),
+    FieldPersonDays = if_else(Category == "Field research", Quantity, NA_real_),
+    FieldConservationResearch = if_else(Category == "Field research", Quantity, NA_real_),
+    FieldAnimalHealth = NA_real_,
+    FieldAnimalCare = NA_real_,
+    FieldOtherDepartments = NA_real_,
+    Description = `Briefly describe, or enter any notes for, this engagement`,
+    Program = `If the engagement is for a program, select it from the list below`,
+    Pillar = NA_character_,
+    Date = first_non_missing_date(DatePublication, DateMedia, DateEngagement, DateStart, as.Date(`Start time`))
+  ) %>%
+  select(-SingleMulti, -DateEngagement, -DateStart, -DateEnd, -DatePublication, -DateMedia)
+
+new_metrics_file <- list.files(path = "data", pattern = "Research metrics new.*\\.xlsx$", full.names = TRUE) %>%
+  sort() %>%
+  tail(1)
+
+metrics_2024_on <- read_xlsx(new_metrics_file) %>%
+  transmute(
+    Source = "2024-on Microsoft Form",
+    ID = as.character(Id),
+    Email,
+    Name,
+    Department,
+    Date = as.Date(`Date of event`),
+    RawCategory = Category,
+    Category = standardize_category(Category),
+    Citation,
+    Link,
+    Effort = clean_number(coalesce(as.character(Effort), as.character(Effort1))),
+    Quantity = clean_number(Quantity),
+    FieldDays = if_else(Category == "Field research", Quantity, NA_real_),
+    FieldConservationResearchHeadcount = clean_number(`Field Team: Number of members from Conservation Research`),
+    FieldAnimalHealthHeadcount = clean_number(`Field Team: Number of members from Animal Health`),
+    FieldAnimalCareHeadcount = clean_number(`Field Team: Number of members from Animal Care`),
+    FieldOtherDepartmentsHeadcount = clean_number(`Field Team: Number of members from other Shedd Departments`),
+    FieldTeamHeadcount = rowSums(
+      across(ends_with("Headcount"), ~ replace_na(.x, 0)),
+      na.rm = TRUE
+    ),
+    FieldConservationResearch = case_when(
+      Category == "Field research" & FieldTeamHeadcount > 0 ~ Quantity * FieldConservationResearchHeadcount,
+      Category == "Field research" ~ Quantity,
+      TRUE ~ NA_real_
+    ),
+    FieldAnimalHealth = if_else(Category == "Field research", Quantity * replace_na(FieldAnimalHealthHeadcount, 0), NA_real_),
+    FieldAnimalCare = if_else(Category == "Field research", Quantity * replace_na(FieldAnimalCareHeadcount, 0), NA_real_),
+    FieldOtherDepartments = if_else(Category == "Field research", Quantity * replace_na(FieldOtherDepartmentsHeadcount, 0), NA_real_),
+    FieldPersonDays = case_when(
+      Category == "Field research" & FieldTeamHeadcount > 0 ~ Quantity * FieldTeamHeadcount,
+      Category == "Field research" ~ Quantity,
+      TRUE ~ NA_real_
+    ),
+    Description,
+    Program,
+    Pillar
+  ) %>%
+  select(-ends_with("Headcount"), -FieldTeamHeadcount)
+
+metrics_all <- bind_rows(metrics_2019_2022, metrics_2022_2024, metrics_2024_on) %>%
+  mutate(
+    Year = year(Date),
+    Quarter = factor(paste0("Q", quarter(Date)), levels = quarter_levels),
+    Department = coalesce(Department, "Conservation Research")
+  )
+
+metrics <- metrics_all %>%
+  filter(!is.na(Date), Date <= cutoff)
+```
+
+```{r import-audit}
+metrics %>%
+  count(Source, Category, sort = TRUE) %>%
+  knitr::kable(caption = "Rows imported by source and standardized metric category")
+```
+
+## Working Assumptions
+
+This overhaul standardizes historical metric names to the current reporting
+names. `Citizen/stakeholder engagement`, `Community / Stakeholder Engagement`,
+`Community Engagement`, and `Capacity Sharing & Training` are all reported as
+`Capacity Sharing & Training`, with the reported quantity interpreted as number
+of people engaged. `Conference or active meeting`, `Conference/Meeting`,
+`Academic`, `Tour`, and other presentation-like labels are reported as
+`Presentation`. `Media` is reported as `Media opportunity`, and old/new field
+labels are reported as `Field research`.
+
+For field research, older rows without team headcounts are carried forward as
+both field days and Conservation Research person-days. Newer rows with
+department headcounts use:
+
+`field person-days = field days * total Shedd field team headcount`
+
+# Citations
+
+```{r citation-data}
+library(scholar)
+
+hc_authors <- read_tsv("data/authors.txt", show_col_types = FALSE) %>% drop_na()
+hc_oldrefs <- read_tsv("data/pre2019_publications.txt", col_names = "reference", show_col_types = FALSE)
+hc_newrefs <- metrics %>%
+  filter(Category == "Publication") %>%
+  select(reference = Citation)
+
+hc_references <- bind_rows(hc_oldrefs, hc_newrefs) %>%
+  dedupe_references(reference)
+
+all_pubs <- hc_authors %>%
+  mutate(all_pubs = map(scholar_id, get_publications)) %>%
+  unnest(all_pubs)
+
+hc_pubs <- all_pubs %>%
+  mutate(hc_affil = map_lgl(title, ~ any(agrepl(.x, hc_references$reference)))) %>%
+  filter(hc_affil, !is.na(year)) %>%
+  filter(!(duplicated(cid) & duplicated(tolower(title))))
+
+pub_cites <- hc_pubs %>%
+  arrange(desc(cites)) %>%
+  pull(cites)
+
+h.index <- tail(which(pub_cites >= seq_along(pub_cites)), 1)
+i10.index <- sum(pub_cites >= 10)
+
+todays_totals <- hc_pubs %>%
+  summarise(
+    date = Sys.Date(),
+    total_pubs = nrow(hc_pubs),
+    total_cites = sum(cites),
+    h_index = h.index,
+    i10_index = i10.index
+  )
+
+write.table(
+  todays_totals,
+  file = "data/citation_counts.txt",
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE,
+  col.names = FALSE,
+  append = TRUE
+)
+
+cites_raw <- read.delim(
+  "data/citation_counts.txt",
+  header = TRUE,
+  sep = "\t",
+  fill = TRUE,
+  stringsAsFactors = FALSE
+) %>%
+  as_tibble() %>%
+  clean_names() %>%
+  mutate(date = as.Date(date)) %>%
+  filter(date <= cutoff)
+
+latest <- cites_raw %>%
+  arrange(date) %>%
+  tail(1)
+```
+
+*****
+
+#### *Current publication metrics (latest cached citation pull: `r latest$date`):*
+##### **Publications:** `r latest$total_pubs`
+##### **Citations:** `r scales::comma(latest$total_cites)`
+##### **h-index:** `r latest$h_index`
+##### **i10-index:** `r latest$i10_index`
+
+*****
+
+# Publications
+
+```{r publications}
+nondupes <- metrics %>%
+  filter(Category == "Publication") %>%
+  dedupe_references(Citation)
+
+pubsumm <- nondupes %>%
+  group_by(Year, Quarter) %>%
+  summarise(Quantity = n(), .groups = "drop") %>%
+  bind_rows(filter(pre2019, Category == "Publications") %>% select(Year, Quarter, Quantity)) %>%
+  mutate(Quarter = factor(Quarter, levels = quarter_levels)) %>%
+  complete(
+    Year = full_seq(range(Year, na.rm = TRUE), 1),
+    Quarter = factor(quarter_levels, levels = quarter_levels),
+    fill = list(Quantity = 0)
+  )
+
+plot_quarterly_bars(pubsumm, "Number of Scientific Publications", -0.25)
+plot_annual_bars(pubsumm, "Number of Scientific Publications", -0.75)
+```
+
+# Citations
+
+```{r citations}
+citesumm <- cites_raw %>%
+  mutate(
+    Year = year(date),
+    Quarter = factor(paste0("Q", quarter(date)), levels = quarter_levels)
+  ) %>%
+  group_by(Year, Quarter) %>%
+  distinct(date, .keep_all = TRUE) %>%
+  filter(date == max(date)) %>%
+  ungroup() %>%
+  arrange(Year, Quarter) %>%
+  mutate(Quantity = total_cites - lag(total_cites)) %>%
+  transmute(Year, Quarter, Quantity = replace_na(Quantity, 0)) %>%
+  bind_rows(
+    pre2019 %>%
+      filter(Category == "Citations") %>%
+      select(Year, Quarter, Quantity)
+  ) %>%
+  complete(
+    Year = full_seq(range(Year, na.rm = TRUE), 1),
+    Quarter = factor(quarter_levels, levels = quarter_levels),
+    fill = list(Quantity = 0)
+  )
+
+plot_quarterly_bars(citesumm, "Number of New Citations", -5)
+plot_annual_bars(citesumm, "Number of New Citations", -20)
+```
+
+# Media Opportunities
+
+```{r media}
+mediasumm <- metric_summary(
+  metrics,
+  category = "Media opportunity",
+  value = "n",
+  pre2019_category = "Media opportunity"
+)
+
+plot_quarterly_bars(mediasumm, "Number of Print/Media Opportunities", -0.5)
+plot_annual_bars(mediasumm, "Number of Print/Media Opportunities", -0.5)
+```
+
+# Presentations
+
+```{r presentations}
+pressumm <- metric_summary(
+  metrics,
+  category = "Presentation",
+  value = "n",
+  pre2019_category = "Presentation"
+)
+
+plot_quarterly_bars(pressumm, "Number of Presentations", -0.75)
+plot_annual_bars(pressumm, "Number of Presentations", -0.75)
+```
+
+# Total Dissemination Outputs
+
+```{r dissemination}
+dissem <- bind_rows(
+  `Scientific publications` = pubsumm,
+  `Print/media` = mediasumm,
+  Presentations = pressumm,
+  .id = "Category"
+)
+
+dissem %>%
+  group_by(Year, Category) %>%
+  summarise(Quantity = sum(Quantity, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = Year, y = Quantity, fill = Category)) +
+  geom_col(alpha = 0.75) +
+  geom_text(
+    aes(y = Quantity - 1, label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+    position = "stack",
+    color = "white",
+    size = 3
+  ) +
+  theme_custom() +
+  theme(legend.spacing.x = unit(1, "mm"), legend.box.margin = margin(-20, 0, 0, 0)) +
+  scale_x_continuous(breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 1)) +
+  labs(x = "", y = "", title = "Number of Dissemination Outputs")
+```
+
+# Capacity Sharing & Training
+
+```{r capacity-sharing}
+engagement_unique_ind <- metric_summary(
+  metrics,
+  category = "Capacity Sharing & Training",
+  value = "quantity",
+  pre2019_category = "Citizen/stakeholder engagement"
+)
+
+plot_quarterly_bars(engagement_unique_ind, "Number of People Engaged Through Capacity Sharing & Training", -10)
+plot_annual_bars(engagement_unique_ind, "Number of People Engaged Through Capacity Sharing & Training", -10)
+```
+
+# Field Research
+
+```{r field-research}
+field_days <- metrics %>%
+  filter(Category == "Field research") %>%
+  group_by(Year, Quarter) %>%
+  summarise(Quantity = sum(FieldDays, na.rm = TRUE), .groups = "drop") %>%
+  bind_rows(filter(pre2019, Category == "Field research") %>% select(Year, Quarter, Quantity)) %>%
+  mutate(Quarter = factor(Quarter, levels = quarter_levels)) %>%
+  complete(
+    Year = full_seq(range(Year, na.rm = TRUE), 1),
+    Quarter = factor(quarter_levels, levels = quarter_levels),
+    fill = list(Quantity = 0)
+  )
+
+field_person_days <- metrics %>%
+  filter(Category == "Field research") %>%
+  group_by(Year, Quarter) %>%
+  summarise(Quantity = sum(FieldPersonDays, na.rm = TRUE), .groups = "drop") %>%
+  bind_rows(filter(pre2019, Category == "Field research") %>% select(Year, Quarter, Quantity)) %>%
+  mutate(Quarter = factor(Quarter, levels = quarter_levels)) %>%
+  complete(
+    Year = full_seq(range(Year, na.rm = TRUE), 1),
+    Quarter = factor(quarter_levels, levels = quarter_levels),
+    fill = list(Quantity = 0)
+  )
+
+field_by_department <- metrics %>%
+  filter(Category == "Field research") %>%
+  select(
+    Year,
+    Quarter,
+    `Conservation Research` = FieldConservationResearch,
+    `Animal Health` = FieldAnimalHealth,
+    `Animal Care` = FieldAnimalCare,
+    `Other Shedd departments` = FieldOtherDepartments
+  ) %>%
+  pivot_longer(
+    cols = -c(Year, Quarter),
+    names_to = "Department",
+    values_to = "PersonDays"
+  ) %>%
+  group_by(Year, Quarter, Department) %>%
+  summarise(PersonDays = sum(PersonDays, na.rm = TRUE), .groups = "drop")
+
+plot_quarterly_bars(field_days, "Number of Field Days", -5)
+plot_annual_bars(field_days, "Number of Field Days", -5)
+
+plot_quarterly_bars(field_person_days, "Number of Field Person-Days", -5)
+plot_annual_bars(field_person_days, "Number of Field Person-Days", -5)
+
+field_by_department %>%
+  group_by(Year, Department) %>%
+  summarise(PersonDays = sum(PersonDays, na.rm = TRUE), .groups = "drop") %>%
+  filter(PersonDays > 0) %>%
+  ggplot(aes(x = Year, y = PersonDays, fill = Department)) +
+  geom_col(alpha = 0.75) +
+  theme_custom() +
+  scale_x_continuous(breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 1)) +
+  labs(x = "", y = "", title = "Field Person-Days by Shedd Department")
+```
+
+# Data Quality Checks
+
+```{r data-quality}
+metrics_all %>%
+  filter(is.na(Category) | is.na(Date)) %>%
+  select(Source, ID, Date, RawCategory, Category, Description) %>%
+  knitr::kable(caption = "Rows needing category or date review")
+
+metrics %>%
+  count(Source, RawCategory, Category, sort = TRUE) %>%
+  knitr::kable(caption = "Raw-to-standard category crosswalk")
+```
