@@ -77,6 +77,15 @@ standardize_category <- function(category) {
   )
 }
 
+standardize_presentation_type <- function(type) {
+  type_norm <- str_squish(type)
+
+  case_when(
+    type_norm %in% c("Panel discussion") ~ "Panel",
+    TRUE ~ type_norm
+  )
+}
+
 metric_summary <- function(data, category, value = c("n", "quantity"), pre2019_category = category) {
   value <- match.arg(value)
 
@@ -118,6 +127,8 @@ plot_quarterly_bars <- function(summary_data, title, label_nudge) {
 }
 
 plot_annual_bars <- function(summary_data, title, label_nudge) {
+  year_breaks <- seq(min(summary_data$Year, na.rm = TRUE), max(summary_data$Year, na.rm = TRUE), by = 1)
+
   summary_data %>%
     group_by(Year) %>%
     summarise(Quantity = sum(Quantity, na.rm = TRUE), .groups = "drop") %>%
@@ -131,7 +142,7 @@ plot_annual_bars <- function(summary_data, title, label_nudge) {
     ) +
     theme_custom() +
     theme(legend.position = "none") +
-    scale_x_continuous(breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 1)) +
+    scale_x_continuous(breaks = year_breaks) +
     labs(x = "", y = "", title = title)
 }
 
@@ -174,6 +185,9 @@ metrics_2019_2022 <- read_xlsx("data/research_metrics_2019-2022.xlsx") %>%
     Date = as.Date(`Date of event`),
     RawCategory = Category,
     Category = standardize_category(Category),
+    MediaOpportunityType = NA_character_,
+    PresentationType = NA_character_,
+    CapacitySharingType = NA_character_,
     Citation,
     Link,
     Effort = clean_number(Effort),
@@ -209,6 +223,9 @@ metrics_2022_2024 <- metrics_2022_2024_raw %>%
     DateMedia = as.Date(`Media Opportunity Date`),
     RawCategory = `What was the engagement type?`,
     Category = standardize_category(RawCategory),
+    MediaOpportunityType = NA_character_,
+    PresentationType = NA_character_,
+    CapacitySharingType = NA_character_,
     Citation,
     Link = case_when(
       Category == "Publication" ~ `Publication Link`,
@@ -249,6 +266,9 @@ metrics_2024_on <- read_xlsx(new_metrics_file) %>%
     Date = as.Date(`Date of event`),
     RawCategory = Category,
     Category = standardize_category(Category),
+    MediaOpportunityType = str_squish(`Type of media opportunity`),
+    PresentationType = standardize_presentation_type(`Type of presentation`),
+    CapacitySharingType = str_squish(`Type of capacity sharing & training`),
     Citation,
     Link,
     Effort = clean_number(coalesce(as.character(Effort), as.character(Effort1))),
@@ -286,6 +306,24 @@ metrics_all <- bind_rows(metrics_2019_2022, metrics_2022_2024, metrics_2024_on) 
     Year = year(Date),
     Quarter = factor(paste0("Q", quarter(Date)), levels = quarter_levels),
     Department = coalesce(Department, "Conservation Research")
+  ) %>%
+  mutate(
+    DescriptionKey = str_squish(str_to_lower(coalesce(Description, ""))),
+    CitationKey = str_squish(str_to_lower(coalesce(Citation, ""))),
+    LinkKey = str_squish(str_to_lower(coalesce(Link, ""))),
+    DuplicateKey = case_when(
+      Category == "Publication" & CitationKey != "" ~ paste(Category, CitationKey),
+      LinkKey != "" ~ paste(Category, Date, LinkKey),
+      DescriptionKey != "" ~ paste(Category, Date, DescriptionKey),
+      TRUE ~ paste(Category, Date, Name, Quantity)
+    )
+  ) %>%
+  filter(!duplicated(DuplicateKey)) %>%
+  select(
+    -DuplicateKey,
+    -DescriptionKey,
+    -CitationKey,
+    -LinkKey
   )
 
 metrics <- metrics_all %>%
@@ -315,93 +353,128 @@ department headcounts use:
 
 `field person-days = field days * total Shedd field team headcount`
 
-# Citations
+# Publications & Citations
 
 ```{r citation-data}
-library(scholar)
+citation_cache <- "data/citation_counts.txt"
 
-hc_authors <- read_tsv("data/authors.txt", show_col_types = FALSE) %>% drop_na()
-hc_oldrefs <- read_tsv("data/pre2019_publications.txt", col_names = "reference", show_col_types = FALSE)
-hc_newrefs <- metrics %>%
-  filter(Category == "Publication") %>%
-  select(reference = Citation)
-
-hc_references <- bind_rows(hc_oldrefs, hc_newrefs) %>%
-  dedupe_references(reference)
-
-all_pubs <- hc_authors %>%
-  mutate(all_pubs = map(scholar_id, get_publications)) %>%
-  unnest(all_pubs)
-
-hc_pubs <- all_pubs %>%
-  mutate(hc_affil = map_lgl(title, ~ any(agrepl(.x, hc_references$reference)))) %>%
-  filter(hc_affil, !is.na(year)) %>%
-  filter(!(duplicated(cid) & duplicated(tolower(title))))
-
-pub_cites <- hc_pubs %>%
-  arrange(desc(cites)) %>%
-  pull(cites)
-
-h.index <- tail(which(pub_cites >= seq_along(pub_cites)), 1)
-i10.index <- sum(pub_cites >= 10)
-
-todays_totals <- hc_pubs %>%
-  summarise(
-    date = Sys.Date(),
-    total_pubs = nrow(hc_pubs),
-    total_cites = sum(cites),
-    h_index = h.index,
-    i10_index = i10.index
-  )
-
-write.table(
-  todays_totals,
-  file = "data/citation_counts.txt",
-  sep = "\t",
-  quote = FALSE,
-  row.names = FALSE,
-  col.names = FALSE,
-  append = TRUE
-)
-
-cites_raw <- read.delim(
-  "data/citation_counts.txt",
+citation_history <- read.delim(
+  citation_cache,
   header = TRUE,
   sep = "\t",
   fill = TRUE,
   stringsAsFactors = FALSE
 ) %>%
+  mutate(CacheRow = row_number()) %>%
   as_tibble() %>%
   clean_names() %>%
-  mutate(date = as.Date(date)) %>%
+  mutate(date = as.Date(date))
+
+if (!Sys.Date() %in% citation_history$date) {
+  library(scholar)
+
+  hc_authors <- read_tsv("data/authors.txt", show_col_types = FALSE) %>% drop_na()
+  hc_oldrefs <- read_tsv("data/pre2019_publications.txt", col_names = "reference", show_col_types = FALSE)
+  hc_newrefs <- metrics %>%
+    filter(Category == "Publication") %>%
+    select(reference = Citation)
+
+  hc_references <- bind_rows(hc_oldrefs, hc_newrefs) %>%
+    dedupe_references(reference)
+
+  all_pubs <- hc_authors %>%
+    mutate(all_pubs = map(scholar_id, get_publications)) %>%
+    unnest(all_pubs)
+
+  hc_pubs <- all_pubs %>%
+    mutate(hc_affil = map_lgl(title, ~ any(agrepl(.x, hc_references$reference)))) %>%
+    filter(hc_affil, !is.na(year)) %>%
+    filter(!(duplicated(cid) & duplicated(tolower(title))))
+
+  pub_cites <- hc_pubs %>%
+    arrange(desc(cites)) %>%
+    pull(cites)
+
+  h.index <- tail(which(pub_cites >= seq_along(pub_cites)), 1)
+  i10.index <- sum(pub_cites >= 10)
+
+  todays_totals <- hc_pubs %>%
+    summarise(
+      date = Sys.Date(),
+      total_pubs = nrow(hc_pubs),
+      total_cites = sum(cites),
+      h_index = h.index,
+      i10_index = i10.index
+    )
+
+  bind_rows(citation_history, todays_totals) %>%
+    select(-cache_row) %>%
+    arrange(date) %>%
+    write_tsv(citation_cache)
+
+  citation_history <- read.delim(
+    citation_cache,
+    header = TRUE,
+    sep = "\t",
+    fill = TRUE,
+    stringsAsFactors = FALSE
+  ) %>%
+    mutate(CacheRow = row_number()) %>%
+    as_tibble() %>%
+    clean_names() %>%
+    mutate(date = as.Date(date))
+}
+
+cites_raw <- citation_history %>%
+  group_by(date) %>%
+  slice_max(cache_row, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(-cache_row) %>%
   filter(date <= cutoff)
 
 latest <- cites_raw %>%
   arrange(date) %>%
   tail(1)
+
+current_year <- year(cutoff)
+current_quarter <- factor(paste0("Q", quarter(cutoff)), levels = quarter_levels)
+period_fill_values <- c("Complete period" = "gray65", "Year to date" = "gray35", "Quarter to date" = "gray35")
 ```
 
-*****
+## Current Publication Impact Snapshot
 
-#### *Current publication metrics (latest cached citation pull: `r latest$date`):*
-##### **Publications:** `r latest$total_pubs`
-##### **Citations:** `r scales::comma(latest$total_cites)`
-##### **h-index:** `r latest$h_index`
-##### **i10-index:** `r latest$i10_index`
+Latest cached citation pull: `r latest$date`
 
-*****
+```{r citation-snapshot}
+tibble(
+  Metric = c("Publications", "Citations", "h-index", "i10-index"),
+  `Current value` = c(
+    scales::comma(latest$total_pubs),
+    scales::comma(latest$total_cites),
+    as.character(latest$h_index),
+    as.character(latest$i10_index)
+  )
+) %>%
+  knitr::kable(align = c("l", "r"))
+```
 
-# Publications
+## Publications
 
 ```{r publications}
 nondupes <- metrics %>%
   filter(Category == "Publication") %>%
   dedupe_references(Citation)
 
-pubsumm <- nondupes %>%
+pub_historical_annual <- read_lines("data/pre2019_publications.txt") %>%
+  tibble(reference = .) %>%
+  mutate(Year = as.integer(str_extract(reference, "\\((20[0-9]{2})\\)", group = 1))) %>%
+  filter(!is.na(Year), Year <= 2018) %>%
+  count(Year, name = "Quantity")
+
+pub_quarterly_current <- nondupes %>%
+  filter(Year >= 2019) %>%
   group_by(Year, Quarter) %>%
   summarise(Quantity = n(), .groups = "drop") %>%
-  bind_rows(filter(pre2019, Category == "Publications") %>% select(Year, Quarter, Quantity)) %>%
   mutate(Quarter = factor(Quarter, levels = quarter_levels)) %>%
   complete(
     Year = full_seq(range(Year, na.rm = TRUE), 1),
@@ -409,11 +482,68 @@ pubsumm <- nondupes %>%
     fill = list(Quantity = 0)
   )
 
-plot_quarterly_bars(pubsumm, "Number of Scientific Publications", -0.25)
-plot_annual_bars(pubsumm, "Number of Scientific Publications", -0.75)
+pub_annual <- bind_rows(
+  pub_historical_annual,
+  pub_quarterly_current %>%
+    group_by(Year) %>%
+    summarise(Quantity = sum(Quantity, na.rm = TRUE), .groups = "drop")
+) %>%
+  complete(
+    Year = full_seq(range(Year, na.rm = TRUE), 1),
+    fill = list(Quantity = 0)
+  )
+
+pubsumm <- bind_rows(
+  pub_historical_annual %>%
+    mutate(Quarter = factor(NA_character_, levels = quarter_levels)),
+  pub_quarterly_current
+)
+
+pub_recent_years <- pub_quarterly_current %>%
+  distinct(Year) %>%
+  arrange(desc(Year)) %>%
+  slice_head(n = 5) %>%
+  pull(Year)
+
+pub_quarterly_recent <- pub_quarterly_current %>%
+  filter(Year %in% pub_recent_years) %>%
+  mutate(PeriodStatus = if_else(Year == current_year & Quarter == current_quarter, "Quarter to date", "Complete period"))
+
+pub_annual %>%
+  mutate(PeriodStatus = if_else(Year == current_year, "Year to date", "Complete period")) %>%
+  ggplot(aes(x = Year, y = Quantity)) +
+  geom_col(aes(fill = PeriodStatus), alpha = 0.8) +
+  geom_text(
+    aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+    color = "black",
+    vjust = -0.35,
+    size = 3
+  ) +
+  theme_custom() +
+  theme(legend.position = "bottom") +
+  scale_x_continuous(breaks = seq(min(pub_annual$Year), max(pub_annual$Year), by = 1)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  labs(x = "", y = "", title = "Number of Scientific Publications")
+
+pub_quarterly_recent %>%
+  ggplot(aes(x = Quarter, y = Quantity)) +
+  facet_grid(~ Year) +
+  geom_col(aes(fill = PeriodStatus), alpha = 0.8) +
+  geom_text(
+    aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+    color = "black",
+    vjust = -0.35,
+    size = 3
+  ) +
+  theme_custom() +
+  theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  labs(x = "", y = "", title = "Quarterly Scientific Publications, Most Recent 5 Years")
 ```
 
-# Citations
+## Citations
 
 ```{r citations}
 citesumm <- cites_raw %>%
@@ -439,8 +569,52 @@ citesumm <- cites_raw %>%
     fill = list(Quantity = 0)
   )
 
-plot_quarterly_bars(citesumm, "Number of New Citations", -5)
-plot_annual_bars(citesumm, "Number of New Citations", -20)
+cite_annual <- citesumm %>%
+  group_by(Year) %>%
+  summarise(Quantity = sum(Quantity, na.rm = TRUE), .groups = "drop")
+
+cite_recent_years <- citesumm %>%
+  distinct(Year) %>%
+  arrange(desc(Year)) %>%
+  slice_head(n = 5) %>%
+  pull(Year)
+
+cite_quarterly_recent <- citesumm %>%
+  filter(Year %in% cite_recent_years) %>%
+  mutate(PeriodStatus = if_else(Year == current_year & Quarter == current_quarter, "Quarter to date", "Complete period"))
+
+cite_annual %>%
+  mutate(PeriodStatus = if_else(Year == current_year, "Year to date", "Complete period")) %>%
+  ggplot(aes(x = Year, y = Quantity)) +
+  geom_col(aes(fill = PeriodStatus), alpha = 0.8) +
+  geom_text(
+    aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+    color = "black",
+    vjust = -0.35,
+    size = 3
+  ) +
+  theme_custom() +
+  theme(legend.position = "bottom") +
+  scale_x_continuous(breaks = seq(min(cite_annual$Year), max(cite_annual$Year), by = 1)) +
+  scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
+  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  labs(x = "", y = "", title = "Number of New Citations")
+
+cite_quarterly_recent %>%
+  ggplot(aes(x = Quarter, y = Quantity)) +
+  facet_grid(~ Year) +
+  geom_col(aes(fill = PeriodStatus), alpha = 0.8) +
+  geom_text(
+    aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+    color = "black",
+    vjust = -0.35,
+    size = 3
+  ) +
+  theme_custom() +
+  theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
+  scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
+  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  labs(x = "", y = "", title = "Quarterly New Citations, Most Recent 5 Years")
 ```
 
 # Media Opportunities
@@ -453,8 +627,8 @@ mediasumm <- metric_summary(
   pre2019_category = "Media opportunity"
 )
 
-plot_quarterly_bars(mediasumm, "Number of Print/Media Opportunities", -0.5)
-plot_annual_bars(mediasumm, "Number of Print/Media Opportunities", -0.5)
+plot_quarterly_bars(mediasumm, "Number of Media Opportunities", -0.5)
+plot_annual_bars(mediasumm, "Number of Media Opportunities", -0.5)
 ```
 
 # Presentations
@@ -469,6 +643,52 @@ pressumm <- metric_summary(
 
 plot_quarterly_bars(pressumm, "Number of Presentations", -0.75)
 plot_annual_bars(pressumm, "Number of Presentations", -0.75)
+
+presentation_type_quarterly <- metrics %>%
+  filter(
+    Category == "Presentation",
+    !is.na(PresentationType),
+    PresentationType != "",
+    Year >= 2026
+  ) %>%
+  arrange(Year, Quarter) %>%
+  mutate(
+    PresentationType = fct_lump_min(PresentationType, min = 2, other_level = "Other single-entry"),
+    YearQuarterLabel = if_else(
+      Year == current_year & Quarter == current_quarter,
+      paste(Year, Quarter, "(QTD)"),
+      paste(Year, Quarter)
+    ),
+    YearQuarter = factor(YearQuarterLabel, levels = unique(YearQuarterLabel))
+  ) %>%
+  count(Year, Quarter, YearQuarter, PresentationType, name = "Quantity") %>%
+  complete(
+    YearQuarter,
+    PresentationType,
+    fill = list(Quantity = 0)
+  ) %>%
+  group_by(PresentationType) %>%
+  mutate(TypeTotal = sum(Quantity, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(PresentationType = fct_reorder(PresentationType, TypeTotal))
+
+ggplot(presentation_type_quarterly, aes(x = YearQuarter, y = PresentationType, fill = Quantity)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))), size = 3.5) +
+  theme_custom() +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  ) +
+  scale_fill_gradient(low = "gray95", high = "gray45") +
+  labs(
+    x = "",
+    y = "",
+    title = "Quarterly Presentation Type Breakdown",
+    subtitle = "Starting with the first complete quarter of presentation-type detail"
+  )
 ```
 
 # Total Dissemination Outputs
