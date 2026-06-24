@@ -482,7 +482,29 @@ latest <- cites_raw %>%
 
 current_year <- year(cutoff)
 current_quarter <- factor(paste0("Q", quarter(cutoff)), levels = quarter_levels)
-period_fill_values <- c("Complete period" = "gray65", "Year to date" = "gray35", "Quarter to date" = "gray35")
+
+metric_colors <- c(
+  publications = "#2C7FB8",
+  citations = "#2CA25F",
+  media = "#F39C12",
+  presentations = "#8E44AD",
+  capacity = "#D95F02",
+  field = "#008B8B"
+)
+
+lighten_color <- function(color, amount = 0.55) {
+  rgb <- grDevices::col2rgb(color) / 255
+  rgb <- rgb * (1 - amount) + amount
+  grDevices::rgb(rgb[1], rgb[2], rgb[3])
+}
+
+period_fill <- function(metric) {
+  c(
+    "Complete period" = metric_colors[[metric]],
+    "Year to date" = lighten_color(metric_colors[[metric]], 0.45),
+    "Quarter to date" = lighten_color(metric_colors[[metric]], 0.45)
+  )
+}
 ```
 
 ## Current Publication Impact Snapshot
@@ -567,7 +589,7 @@ pub_annual %>%
   theme(legend.position = "bottom") +
   scale_x_continuous(breaks = seq(min(pub_annual$Year), max(pub_annual$Year), by = 1)) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  scale_fill_manual(values = period_fill("publications")[c("Complete period", "Year to date")]) +
   labs(x = "", y = "", title = "Number of Scientific Publications")
 
 pub_quarterly_recent %>%
@@ -583,7 +605,7 @@ pub_quarterly_recent %>%
   theme_custom() +
   theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  scale_fill_manual(values = period_fill("publications")[c("Complete period", "Quarter to date")]) +
   labs(x = "", y = "", title = "Quarterly Scientific Publications, Most Recent 5 Years")
 ```
 
@@ -641,7 +663,7 @@ cite_annual %>%
   theme(legend.position = "bottom") +
   scale_x_continuous(breaks = seq(min(cite_annual$Year), max(cite_annual$Year), by = 1)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  scale_fill_manual(values = period_fill("citations")[c("Complete period", "Year to date")]) +
   labs(x = "", y = "", title = "Number of New Citations")
 
 cite_quarterly_recent %>%
@@ -657,7 +679,7 @@ cite_quarterly_recent %>%
   theme_custom() +
   theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  scale_fill_manual(values = period_fill("citations")[c("Complete period", "Quarter to date")]) +
   labs(x = "", y = "", title = "Quarterly New Citations, Most Recent 5 Years")
 ```
 
@@ -699,7 +721,7 @@ media_annual %>%
   theme(legend.position = "bottom") +
   scale_x_continuous(breaks = seq(min(media_annual$Year), max(media_annual$Year), by = 1)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  scale_fill_manual(values = period_fill("media")[c("Complete period", "Year to date")]) +
   labs(x = "", y = "", title = "Number of Media Opportunities")
 
 media_quarterly_recent %>%
@@ -715,7 +737,7 @@ media_quarterly_recent %>%
   theme_custom() +
   theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  scale_fill_manual(values = period_fill("media")[c("Complete period", "Quarter to date")]) +
   labs(x = "", y = "", title = "Quarterly Media Opportunities, Most Recent 5 Years")
 
 media_type_quarterly <- metrics %>%
@@ -756,7 +778,7 @@ ggplot(media_type_quarterly, aes(x = YearQuarter, y = MediaOpportunityType, fill
     axis.text.x = element_text(size = 11),
     axis.text.y = element_text(size = 11)
   ) +
-  scale_fill_gradient(low = "gray95", high = "gray45") +
+  scale_fill_gradient(low = scales::alpha(metric_colors[["media"]], 0.1), high = metric_colors[["media"]]) +
   labs(
     x = "",
     y = "",
@@ -803,7 +825,7 @@ presentation_annual %>%
   theme(legend.position = "bottom") +
   scale_x_continuous(breaks = seq(min(presentation_annual$Year), max(presentation_annual$Year), by = 1)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  scale_fill_manual(values = period_fill("presentations")[c("Complete period", "Year to date")]) +
   labs(x = "", y = "", title = "Number of Presentations")
 
 presentation_quarterly_recent %>%
@@ -819,7 +841,7 @@ presentation_quarterly_recent %>%
   theme_custom() +
   theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  scale_fill_manual(values = period_fill("presentations")[c("Complete period", "Quarter to date")]) +
   labs(x = "", y = "", title = "Quarterly Presentations, Most Recent 5 Years")
 
 presentation_type_quarterly <- metrics %>%
@@ -860,7 +882,7 @@ ggplot(presentation_type_quarterly, aes(x = YearQuarter, y = PresentationType, f
     axis.text.x = element_text(size = 11),
     axis.text.y = element_text(size = 11)
   ) +
-  scale_fill_gradient(low = "gray95", high = "gray45") +
+  scale_fill_gradient(low = scales::alpha(metric_colors[["presentations"]], 0.1), high = metric_colors[["presentations"]]) +
   labs(
     x = "",
     y = "",
@@ -905,7 +927,11 @@ ggplot(dissem_annual, aes(x = YearLabel, y = Quantity, fill = Category)) +
   ) +
   theme_custom() +
   theme(axis.text.x = element_text(size = 10), legend.position = "bottom") +
-  scale_fill_manual(values = c("Presentations" = "gray70", "Media" = "gray50", "Scientific publications" = "gray30")) +
+  scale_fill_manual(values = c(
+    "Presentations" = metric_colors[["presentations"]],
+    "Media" = metric_colors[["media"]],
+    "Scientific publications" = metric_colors[["publications"]]
+  )) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
   labs(x = "", y = "", title = "Number of Dissemination Outputs")
 ```
@@ -948,7 +974,7 @@ capacity_annual %>%
   theme(legend.position = "bottom") +
   scale_x_continuous(breaks = seq(min(capacity_annual$Year), max(capacity_annual$Year), by = 1)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  scale_fill_manual(values = period_fill("capacity")[c("Complete period", "Year to date")]) +
   labs(x = "", y = "", title = "People Engaged Through Capacity Sharing & Training")
 
 capacity_quarterly_recent %>%
@@ -964,7 +990,7 @@ capacity_quarterly_recent %>%
   theme_custom() +
   theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  scale_fill_manual(values = period_fill("capacity")[c("Complete period", "Quarter to date")]) +
   labs(x = "", y = "", title = "Quarterly Capacity Sharing & Training Engagement, Most Recent 5 Years")
 
 capacity_type_quarterly <- metrics %>%
@@ -1005,7 +1031,7 @@ ggplot(capacity_type_quarterly, aes(x = YearQuarter, y = CapacitySharingType, fi
     axis.text.x = element_text(size = 9),
     axis.text.y = element_text(size = 11)
   ) +
-  scale_fill_gradient(low = "gray95", high = "gray45") +
+  scale_fill_gradient(low = scales::alpha(metric_colors[["capacity"]], 0.1), high = metric_colors[["capacity"]]) +
   labs(
     x = "",
     y = "",
@@ -1094,7 +1120,7 @@ field_annual %>%
   theme(legend.position = "bottom") +
   scale_x_continuous(breaks = seq(min(field_annual$Year), max(field_annual$Year), by = 1)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Year to date")]) +
+  scale_fill_manual(values = period_fill("field")[c("Complete period", "Year to date")]) +
   labs(x = "", y = "", title = "Field Research Days")
 
 field_quarterly_recent %>%
@@ -1110,7 +1136,7 @@ field_quarterly_recent %>%
   theme_custom() +
   theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
-  scale_fill_manual(values = period_fill_values[c("Complete period", "Quarter to date")]) +
+  scale_fill_manual(values = period_fill("field")[c("Complete period", "Quarter to date")]) +
   labs(x = "", y = "", title = "Quarterly Field Research Days, Most Recent 5 Years")
 
 ggplot(field_by_department, aes(x = YearQuarter, y = Department, fill = PersonDays)) +
@@ -1123,7 +1149,7 @@ ggplot(field_by_department, aes(x = YearQuarter, y = Department, fill = PersonDa
     axis.text.x = element_text(size = 11),
     axis.text.y = element_text(size = 11)
   ) +
-  scale_fill_gradient(low = "gray95", high = "gray45") +
+  scale_fill_gradient(low = scales::alpha(metric_colors[["field"]], 0.1), high = metric_colors[["field"]]) +
   labs(
     x = "",
     y = "",
