@@ -309,9 +309,39 @@ metrics_2022_2024 <- metrics_2022_2024_raw %>%
   ) %>%
   select(-SingleMulti, -DateEngagement, -DateStart, -DateEnd, -DatePublication, -DateMedia)
 
-new_metrics_file <- list.files(path = "data", pattern = "Research metrics new.*\\.xlsx$", full.names = TRUE) %>%
-  sort() %>%
-  tail(1)
+onedrive_metrics_file <- c(
+  file.path(
+    Sys.getenv("HOME"),
+    "Library",
+    "CloudStorage",
+    "OneDrive-SheddAquariumSociety",
+    "Research metrics new 1.xlsx"
+  ),
+  file.path(
+    Sys.getenv("HOME"),
+    "OneDrive - Shedd Aquarium Society",
+    "Research metrics new 1.xlsx"
+  )
+)
+onedrive_metrics_file <- onedrive_metrics_file[file.exists(onedrive_metrics_file)][1]
+
+if (!is.na(onedrive_metrics_file)) {
+  local_metrics_file <- file.path("data", basename(onedrive_metrics_file))
+  if (
+    !file.exists(local_metrics_file) ||
+      file.info(onedrive_metrics_file)$mtime > file.info(local_metrics_file)$mtime
+  ) {
+    file.copy(onedrive_metrics_file, local_metrics_file, overwrite = TRUE)
+  }
+}
+
+new_metrics_candidates <- list.files(path = "data", pattern = "Research metrics new.*\\.xlsx$", full.names = TRUE)
+
+if (length(new_metrics_candidates) == 0) {
+  stop("No 'Research metrics new*.xlsx' file found in data/ or the configured OneDrive root.")
+}
+
+new_metrics_file <- new_metrics_candidates[which.max(file.info(new_metrics_candidates)$mtime)]
 
 metrics_2024_on <- read_xlsx(new_metrics_file) %>%
   transmute(
