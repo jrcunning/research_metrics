@@ -8,6 +8,7 @@ output:
 date: 
 params:
   cutoff: !r Sys.Date()
+  refresh_citations: true
 ---
 
 ```{r setup, include=FALSE}
@@ -20,6 +21,7 @@ knitr::opts_chunk$set(
 )
 
 cutoff <- as.Date(params$cutoff)
+refresh_citations <- isTRUE(params$refresh_citations)
 ```
 
 ```{r report-css, results='asis'}
@@ -220,6 +222,436 @@ dedupe_references <- function(data, reference_col = Citation, threshold = 0.10) 
 
   data[!duplicated(groups), ]
 }
+
+latest_matching_file <- function(path, pattern) {
+  files <- list.files(path = path, pattern = pattern, full.names = TRUE)
+
+  if (length(files) == 0) {
+    return(NA_character_)
+  }
+
+  files[which.max(file.info(files)$mtime)]
+}
+
+read_scival_lines <- function(path) {
+  read_lines(path, locale = locale(encoding = "UTF-8")) %>%
+    str_remove("^\ufeff") %>%
+    str_replace("^\\t+", "")
+}
+
+read_scival_metadata <- function(path) {
+  metadata_keys <- c(
+    "Data set",
+    "Entity",
+    "Year range",
+    "Subject classification",
+    "Filtered by",
+    "Types of publications included",
+    "Self-citations",
+    "Data source",
+    "Date last updated",
+    "Date exported"
+  )
+
+  lines <- read_scival_lines(path)
+
+  map_dfr(metadata_keys, function(key) {
+    line <- lines[str_starts(lines, fixed(paste0(key, ",")))][1]
+
+    if (is.na(line)) {
+      return(tibble(Field = key, Value = NA_character_))
+    }
+
+    row <- read.csv(
+      text = line,
+      header = FALSE,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+
+    tibble(Field = key, Value = as.character(row[1, 2]))
+  })
+}
+
+read_scival_summary_metrics <- function(path) {
+  summary_metrics <- c(
+    "Scholarly Output cited by Policies",
+    "Scholarly Output cited by Policies (%)",
+    "Citing Policy Documents",
+    "Policy Citations",
+    "Policy Bodies",
+    "Policy Body Countries",
+    "Field-Normalized Policy Impact"
+  )
+
+  lines <- read_scival_lines(path)
+
+  map_dfr(summary_metrics, function(metric) {
+    line <- lines[str_starts(lines, fixed(paste0(metric, ",")))][1]
+
+    if (is.na(line)) {
+      return(tibble(Metric = metric, Value = NA_real_))
+    }
+
+    row <- read.csv(
+      text = line,
+      header = FALSE,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+
+    tibble(Metric = metric, Value = as.numeric(row[1, 2]))
+  })
+}
+
+read_scival_wide_table <- function(path) {
+  lines <- read_scival_lines(path)
+  header_index <- which(str_detect(lines, "Overall") & str_detect(lines, "\\b(19|20)[0-9]{2}\\b"))[1]
+
+  if (is.na(header_index)) {
+    return(tibble())
+  }
+
+  data_lines <- lines[header_index:length(lines)]
+  data_lines <- data_lines[
+    str_squish(data_lines) != "" &
+      !str_detect(data_lines, "Elsevier B\\.V\\.")
+  ]
+
+  read_csv(
+    I(data_lines),
+    show_col_types = FALSE,
+    name_repair = "unique",
+    na = c("", "NA")
+  ) %>%
+    select(where(~ !all(is.na(.x))))
+}
+
+read_scival_series <- function(path) {
+  table <- read_scival_wide_table(path)
+
+  if (nrow(table) == 0) {
+    return(tibble())
+  }
+
+  label_cols <- names(table)[str_detect(names(table), "^\\.\\.\\.")]
+  value_cols <- setdiff(names(table), label_cols)
+
+  table %>%
+    filter(if_any(everything(), ~ !is.na(.x))) %>%
+    mutate(
+      Measure = pmap_chr(across(all_of(label_cols)), function(...) {
+        labels <- c(...)
+        labels <- labels[!is.na(labels) & str_squish(as.character(labels)) != ""]
+        str_squish(paste(labels, collapse = " - "))
+      })
+    ) %>%
+    select(Measure, all_of(value_cols)) %>%
+    pivot_longer(-Measure, names_to = "Period", values_to = "Value") %>%
+    mutate(
+      Value = as.numeric(Value),
+      Year = suppressWarnings(as.integer(Period))
+    ) %>%
+    filter(!is.na(Value))
+}
+
+read_scival_policy_documents <- function(path) {
+  lines <- read_scival_lines(path)
+  header_index <- which(str_detect(lines, "^\"Title\",\"Page Source Url\""))[1]
+
+  if (is.na(header_index)) {
+    return(tibble())
+  }
+
+  read_csv(
+    I(lines[header_index:length(lines)]),
+    show_col_types = FALSE,
+    name_repair = "unique",
+    na = c("", "NA")
+  ) %>%
+    filter(!is.na(Title), Title != "")
+}
+
+spread_policy_labels <- function(y, min_gap = 0.17, lower = -1.12, upper = 1.12) {
+  if (length(y) == 0) {
+    return(y)
+  }
+
+  ordered_index <- order(y, decreasing = TRUE)
+  adjusted <- pmin(pmax(y[ordered_index], lower), upper)
+
+  if (length(adjusted) > 1) {
+    for (i in 2:length(adjusted)) {
+      adjusted[[i]] <- min(adjusted[[i]], adjusted[[i - 1]] - min_gap)
+    }
+  }
+
+  if (tail(adjusted, 1) < lower) {
+    adjusted <- adjusted + (lower - tail(adjusted, 1))
+  }
+
+  if (adjusted[[1]] > upper) {
+    adjusted <- adjusted - (adjusted[[1]] - upper)
+  }
+
+  out <- numeric(length(y))
+  out[ordered_index] <- adjusted
+  out
+}
+
+extract_dois <- function(reference) {
+  reference %>%
+    str_replace_all(regex("%2f", ignore_case = TRUE), "/") %>%
+    str_extract_all(regex("10\\.\\d{4,9}/[^\\s\"<>]+", ignore_case = TRUE)) %>%
+    unlist(use.names = FALSE) %>%
+    str_replace_all(regex("^https?://(dx\\.)?doi\\.org/", ignore_case = TRUE), "") %>%
+    str_remove("[?#].*$") %>%
+    str_remove(regex("(\\.(full|abstract|pdf|epdf|xml|html))+$", ignore_case = TRUE)) %>%
+    str_remove("[\\]\\)\\.,;:]+$") %>%
+    str_to_lower()
+}
+
+normalize_publication_text <- function(x) {
+  x %>%
+    str_to_lower() %>%
+    str_replace_all("[^a-z0-9]+", " ") %>%
+    str_squish()
+}
+
+publication_reference_columns <- c("Citation", "Link", "Publication Link")
+
+publication_reference_text <- function(data) {
+  available_cols <- intersect(publication_reference_columns, names(data))
+
+  if (length(available_cols) == 0) {
+    return(rep(NA_character_, nrow(data)))
+  }
+
+  pmap_chr(data[available_cols], function(...) {
+    values <- as.character(c(...))
+    values <- str_squish(values)
+    values <- values[!is.na(values) & values != "" & str_to_upper(values) != "NA"]
+
+    if (length(values) == 0) {
+      return(NA_character_)
+    }
+
+    str_squish(paste(values, collapse = " "))
+  })
+}
+
+publication_references <- function(data, category_col) {
+  publications <- data %>%
+    filter(str_detect(coalesce(as.character(.data[[category_col]]), ""), regex("Publication", ignore_case = TRUE)))
+
+  publications %>%
+    transmute(
+      reference = as.character(Citation),
+      DOIReference = publication_reference_text(publications)
+    )
+}
+
+first_crossref_year <- function(item) {
+  if (is.null(item$issued) || is.null(item$issued[["date-parts"]])) {
+    return(NA_integer_)
+  }
+
+  date_parts <- item$issued[["date-parts"]][[1]]
+
+  if (length(date_parts) == 0) {
+    return(NA_integer_)
+  }
+
+  as.integer(date_parts[[1]])
+}
+
+or_missing <- function(x, missing_value) {
+  if (is.null(x) || length(x) == 0) {
+    return(missing_value)
+  }
+
+  x
+}
+
+resolve_doi_from_crossref <- function(title, year = NA_integer_) {
+  if (
+    !requireNamespace("httr", quietly = TRUE) ||
+      !requireNamespace("jsonlite", quietly = TRUE)
+  ) {
+    return(tibble(DOI = NA_character_, MatchTitle = NA_character_, MatchScore = NA_real_, MatchYear = NA_integer_))
+  }
+
+  response <- tryCatch(
+    httr::GET(
+      "https://api.crossref.org/works",
+      query = list(
+        "query.title" = title,
+        rows = 5,
+        select = "DOI,title,issued,score"
+      ),
+      httr::user_agent("Shedd research metrics DOI lookup"),
+      httr::timeout(15)
+    ),
+    error = function(e) NULL
+  )
+
+  if (is.null(response) || httr::status_code(response) != 200) {
+    return(tibble(DOI = NA_character_, MatchTitle = NA_character_, MatchScore = NA_real_, MatchYear = NA_integer_))
+  }
+
+  content <- httr::content(response, as = "text", encoding = "UTF-8")
+  items <- jsonlite::fromJSON(content, simplifyVector = FALSE)$message$items
+
+  if (length(items) == 0) {
+    return(tibble(DOI = NA_character_, MatchTitle = NA_character_, MatchScore = NA_real_, MatchYear = NA_integer_))
+  }
+
+  title_norm <- normalize_publication_text(title)
+
+  candidates <- map_dfr(items, function(item) {
+    match_title <- if (length(item$title) > 0) item$title[[1]] else NA_character_
+    match_year <- first_crossref_year(item)
+
+    tibble(
+      DOI = str_to_lower(or_missing(item$DOI, NA_character_)),
+      MatchTitle = match_title,
+      MatchScore = stringdist::stringsim(title_norm, normalize_publication_text(match_title), method = "jw"),
+      MatchYear = match_year,
+      CrossrefScore = or_missing(item$score, NA_real_)
+    )
+  }) %>%
+    mutate(YearMatches = !is.na(year) & !is.na(MatchYear) & year == MatchYear) %>%
+    filter(!is.na(DOI), MatchScore >= 0.88 | (YearMatches & MatchScore >= 0.82)) %>%
+    arrange(desc(YearMatches), desc(MatchScore), desc(CrossrefScore))
+
+  if (nrow(candidates) == 0) {
+    return(tibble(DOI = NA_character_, MatchTitle = NA_character_, MatchScore = NA_real_, MatchYear = NA_integer_))
+  }
+
+  candidates %>%
+    slice(1) %>%
+    select(DOI, MatchTitle, MatchScore, MatchYear)
+}
+
+doi_from_references <- function(title, reference_lookup) {
+  title_norm <- normalize_publication_text(title)
+  matches <- reference_lookup %>%
+    filter(str_detect(ReferenceNorm, fixed(title_norm))) %>%
+    pull(DOI) %>%
+    unlist(use.names = FALSE)
+
+  matches <- matches[!is.na(matches) & matches != ""]
+
+  if (length(matches) == 0) {
+    return(NA_character_)
+  }
+
+  matches[1]
+}
+
+write_publication_dois <- function(
+  publications,
+  references,
+  output_file = "output/publication_dois.txt",
+  detail_file = "output/publication_doi_details.csv"
+) {
+  reference_lookup <- references
+
+  if (!"DOIReference" %in% names(reference_lookup)) {
+    reference_lookup <- reference_lookup %>%
+      mutate(DOIReference = reference)
+  }
+
+  reference_lookup <- reference_lookup %>%
+    mutate(
+      ReferenceNorm = normalize_publication_text(reference),
+      DOIReference = str_squish(as.character(DOIReference)),
+      DOIReference = if_else(str_to_upper(DOIReference) == "NA", NA_character_, DOIReference),
+      DOIReference = coalesce(na_if(DOIReference, ""), as.character(reference)),
+      DOI = map(DOIReference, extract_dois)
+    )
+
+  publication_dois <- publications %>%
+    filter(!is.na(title), title != "") %>%
+    mutate(
+      ScholarAuthorID = if ("scholar_id" %in% names(.)) as.character(scholar_id) else NA_character_,
+      ScholarCID = if ("cid" %in% names(.)) as.character(cid) else NA_character_,
+      ScholarPubID = if ("pubid" %in% names(.)) as.character(pubid) else NA_character_
+    ) %>%
+    transmute(
+      Title = title,
+      Year = as.integer(year),
+      ScholarAuthorID,
+      ScholarCID,
+      ScholarPubID,
+      DOI = map_chr(title, doi_from_references, reference_lookup),
+      DOISource = if_else(is.na(DOI), NA_character_, "local reference")
+    )
+
+  if (file.exists(detail_file)) {
+    cached_dois <- read_csv(detail_file, show_col_types = FALSE) %>%
+      filter(!is.na(DOI), DOI != "") %>%
+      transmute(
+        TitleNorm = normalize_publication_text(Title),
+        Year = as.integer(Year),
+        CachedDOI = DOI,
+        CachedDOISource = DOISource
+      ) %>%
+      distinct(TitleNorm, Year, .keep_all = TRUE)
+
+    publication_dois <- publication_dois %>%
+      mutate(TitleNorm = normalize_publication_text(Title)) %>%
+      left_join(cached_dois, by = c("TitleNorm", "Year")) %>%
+      mutate(
+        DOI = coalesce(DOI, CachedDOI),
+        DOISource = coalesce(DOISource, CachedDOISource)
+      ) %>%
+      select(-TitleNorm, -CachedDOI, -CachedDOISource)
+  }
+
+  missing_doi_rows <- which(is.na(publication_dois$DOI))
+
+  if (length(missing_doi_rows) > 0) {
+    crossref_matches <- map_dfr(missing_doi_rows, function(row_index) {
+      Sys.sleep(0.1)
+
+      resolve_doi_from_crossref(
+        publication_dois$Title[[row_index]],
+        publication_dois$Year[[row_index]]
+      ) %>%
+        mutate(RowIndex = row_index)
+    })
+
+    if (nrow(crossref_matches) > 0) {
+      for (match_index in seq_len(nrow(crossref_matches))) {
+        row_index <- crossref_matches$RowIndex[[match_index]]
+        doi <- crossref_matches$DOI[[match_index]]
+
+        if (!is.na(doi) && doi != "") {
+          publication_dois$DOI[[row_index]] <- doi
+          publication_dois$DOISource[[row_index]] <- "Crossref title lookup"
+        }
+      }
+    }
+  }
+
+  doi_list <- publication_dois %>%
+    filter(!is.na(DOI), DOI != "") %>%
+    distinct(DOI) %>%
+    arrange(DOI) %>%
+    pull(DOI)
+
+  dir.create(dirname(output_file), showWarnings = FALSE, recursive = TRUE)
+  write_lines(doi_list, output_file)
+  write_csv(publication_dois, detail_file)
+
+  tibble(
+    DOIFile = output_file,
+    DetailFile = detail_file,
+    Publications = nrow(publication_dois),
+    UniqueDOIs = length(doi_list)
+  )
+}
 ```
 
 <!-- # Import And Normalize Data -->
@@ -327,18 +759,38 @@ onedrive_metrics_file <- onedrive_metrics_file[file.exists(onedrive_metrics_file
 
 if (!is.na(onedrive_metrics_file)) {
   local_metrics_file <- file.path("data", basename(onedrive_metrics_file))
+  onedrive_metrics_info <- file.info(onedrive_metrics_file)
+  onedrive_metrics_available <- !is.na(onedrive_metrics_info$size) && onedrive_metrics_info$size > 0
+
   if (
-    !file.exists(local_metrics_file) ||
-      file.info(onedrive_metrics_file)$mtime > file.info(local_metrics_file)$mtime
+    onedrive_metrics_available &&
+      (
+        !file.exists(local_metrics_file) ||
+          file.info(local_metrics_file)$size == 0 ||
+          onedrive_metrics_info$mtime > file.info(local_metrics_file)$mtime
+      )
   ) {
-    file.copy(onedrive_metrics_file, local_metrics_file, overwrite = TRUE)
+    temp_metrics_file <- tempfile(fileext = ".xlsx")
+    copied_metrics_file <- file.copy(onedrive_metrics_file, temp_metrics_file, overwrite = TRUE)
+    copied_metrics_available <- copied_metrics_file &&
+      !is.na(file.info(temp_metrics_file)$size) &&
+      file.info(temp_metrics_file)$size > 0
+
+    if (copied_metrics_available) {
+      file.copy(temp_metrics_file, local_metrics_file, overwrite = TRUE)
+    } else {
+      warning("Unable to copy latest OneDrive metrics workbook; using the local data/ copy.")
+    }
+
+    unlink(temp_metrics_file)
   }
 }
 
-new_metrics_candidates <- list.files(path = "data", pattern = "Research metrics new.*\\.xlsx$", full.names = TRUE)
+new_metrics_candidates <- list.files(path = "data", pattern = "^Research metrics new.*\\.xlsx$", full.names = TRUE)
+new_metrics_candidates <- new_metrics_candidates[file.info(new_metrics_candidates)$size > 0]
 
 if (length(new_metrics_candidates) == 0) {
-  stop("No 'Research metrics new*.xlsx' file found in data/ or the configured OneDrive root.")
+  stop("No non-empty 'Research metrics new*.xlsx' file found in data/ or the configured OneDrive root.")
 }
 
 new_metrics_file <- new_metrics_candidates[which.max(file.info(new_metrics_candidates)$mtime)]
@@ -422,6 +874,34 @@ metrics <- metrics_all %>%
   filter(!is.na(Date), Date <= cutoff)
 ```
 
+```{r import-policy-data, include=FALSE}
+policy_dir <- "data/policy"
+policy_documents_file <- file.path(policy_dir, "Policies.csv")
+
+policy_files <- c(
+  summary = latest_matching_file(policy_dir, "^Summary_Metrics.*\\.csv$"),
+  policies = if (file.exists(policy_documents_file)) policy_documents_file else NA_character_
+)
+
+policy_enabled <- dir.exists(policy_dir) && !any(is.na(policy_files))
+
+if (policy_enabled) {
+  policy_metadata <- read_scival_metadata(policy_files[["summary"]]) %>%
+    mutate(Export = "summary", File = basename(policy_files[["summary"]]), .before = Field)
+
+  policy_summary_metrics <- read_scival_summary_metrics(policy_files[["summary"]])
+} else {
+  policy_metadata <- tibble(Export = character(), File = character(), Field = character(), Value = character())
+  policy_summary_metrics <- tibble(Metric = character(), Value = numeric())
+}
+
+policy_citing_documents <- if (!is.na(policy_files[["policies"]]) && file.exists(policy_files[["policies"]])) {
+  read_scival_policy_documents(policy_files[["policies"]])
+} else {
+  tibble()
+}
+```
+
 ```{r import-audit, include=FALSE}
 current_source_audit <- metrics %>%
   group_by(Source) %>%
@@ -456,10 +936,35 @@ historical_source_audit <- pre2019 %>%
     Maintainer = "Historical summary workbook"
   )
 
-bind_rows(current_source_audit, historical_source_audit) %>%
+policy_source_audit <- if (policy_enabled) {
+  policy_year_ranges <- policy_metadata %>%
+    filter(Field == "Year range", !is.na(Value)) %>%
+    distinct(Value) %>%
+    pull(Value) %>%
+    paste(collapse = "; ")
+
+  tibble(
+    DataFile = "data/policy/Summary_Metrics*.csv; data/policy/Policies.csv",
+    DateRange = policy_year_ranges,
+    Maintainer = "SciVal export (Shedd Conservation Research entity)",
+    Entries = sum(!is.na(policy_files))
+  )
+} else {
+  tibble(DataFile = character(), DateRange = character(), Maintainer = character(), Entries = integer())
+}
+
+bind_rows(
+  current_source_audit %>%
+    mutate(DateRange = paste(format(StartDate, "%Y-%m-%d"), format(EndDate, "%Y-%m-%d"), sep = " to ")) %>%
+    select(DataFile, DateRange, Maintainer, Entries),
+  historical_source_audit %>%
+    mutate(DateRange = paste(format(StartDate, "%Y-%m-%d"), format(EndDate, "%Y-%m-%d"), sep = " to ")) %>%
+    select(DataFile, DateRange, Maintainer, Entries),
+  policy_source_audit
+) %>%
   transmute(
     `Data file` = DataFile,
-    `Date range` = paste(format(StartDate, "%Y-%m-%d"), format(EndDate, "%Y-%m-%d"), sep = " to "),
+    `Date range` = DateRange,
     Maintainer,
     `Entries retained` = Entries
   ) %>%
@@ -492,6 +997,7 @@ department headcounts use:
 
 ```{r citation-data}
 citation_cache <- "data/citation_counts.txt"
+scholar_publication_cache <- "output/google_scholar_publications.csv"
 
 citation_history <- read.delim(
   citation_cache,
@@ -505,17 +1011,24 @@ citation_history <- read.delim(
   clean_names() %>%
   mutate(date = as.Date(date))
 
-if (!Sys.Date() %in% citation_history$date) {
+hc_oldrefs <- read_tsv("data/pre2019_publications.txt", col_names = "reference", show_col_types = FALSE) %>%
+  mutate(DOIReference = reference)
+hc_newrefs <- metrics %>%
+  publication_references("Category")
+
+hc_references <- bind_rows(hc_oldrefs, hc_newrefs) %>%
+  dedupe_references(reference)
+
+needs_scholar_pull <- refresh_citations &&
+  (
+    !Sys.Date() %in% citation_history$date ||
+      !file.exists(scholar_publication_cache)
+  )
+
+if (needs_scholar_pull) {
   library(scholar)
 
   hc_authors <- read_tsv("data/authors.txt", show_col_types = FALSE) %>% drop_na()
-  hc_oldrefs <- read_tsv("data/pre2019_publications.txt", col_names = "reference", show_col_types = FALSE)
-  hc_newrefs <- metrics %>%
-    filter(Category == "Publication") %>%
-    select(reference = Citation)
-
-  hc_references <- bind_rows(hc_oldrefs, hc_newrefs) %>%
-    dedupe_references(reference)
 
   all_pubs <- hc_authors %>%
     mutate(all_pubs = map(scholar_id, get_publications)) %>%
@@ -526,6 +1039,33 @@ if (!Sys.Date() %in% citation_history$date) {
     filter(hc_affil, !is.na(year)) %>%
     filter(!(duplicated(cid) & duplicated(tolower(title))))
 
+  dir.create(dirname(scholar_publication_cache), showWarnings = FALSE, recursive = TRUE)
+  write_csv(hc_pubs, scholar_publication_cache)
+} else if (file.exists(scholar_publication_cache)) {
+  hc_pubs <- read_csv(
+    scholar_publication_cache,
+    col_types = cols(
+      .default = col_guess(),
+      cid = col_character(),
+      pubid = col_character()
+    )
+  )
+} else {
+  hc_pubs <- tibble()
+}
+
+if (nrow(hc_pubs) > 0) {
+  publication_doi_summary <- write_publication_dois(hc_pubs, hc_references)
+} else {
+  publication_doi_summary <- tibble(
+    DOIFile = "output/publication_dois.txt",
+    DetailFile = "output/publication_doi_details.csv",
+    Publications = 0,
+    UniqueDOIs = 0
+  )
+}
+
+if (refresh_citations && !Sys.Date() %in% citation_history$date) {
   pub_cites <- hc_pubs %>%
     arrange(desc(cites)) %>%
     pull(cites)
@@ -577,6 +1117,7 @@ current_quarter <- factor(paste0("Q", quarter(cutoff)), levels = quarter_levels)
 metric_colors <- c(
   publications = "#2C7FB8",
   citations = "#2CA25F",
+  policy = "#6A7F2A",
   media = "#F39C12",
   presentations = "#8E44AD",
   capacity = "#D95F02",
@@ -893,6 +1434,187 @@ cite_quarterly_recent %>%
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
   scale_fill_manual(values = period_fill("citations")[c("Complete period", "Quarter to date")]) +
   labs(x = "", y = "", title = "Quarterly New Citations, Most Recent 5 Years")
+```
+
+---
+
+# Policy Impact
+
+```{r policy-impact, results='asis', fig.width=10.5, fig.height=6.2, out.width='100%'}
+if (!policy_enabled) {
+  cat("_No SciVal Policy Impact exports were found in `data/policy/`._")
+} else {
+  policy_meta_value <- function(export, field) {
+    value <- policy_metadata %>%
+      filter(Export == export, Field == field) %>%
+      pull(Value)
+
+    if (length(value) == 0 || is.na(value[1])) {
+      return("not listed")
+    }
+
+    value[1]
+  }
+
+  cat(sprintf(
+    "*SciVal data last updated: %s*  \n*Exported: %s; summary publication-year range: %s*\n\n",
+    policy_meta_value("summary", "Date last updated"),
+    policy_meta_value("summary", "Date exported"),
+    policy_meta_value("summary", "Year range")
+  ))
+
+  policy_summary_display <- policy_summary_metrics %>%
+    mutate(
+      Metric = recode(
+        Metric,
+        `Scholarly Output cited by Policies` = "Scholarly output cited by policy documents",
+        `Scholarly Output cited by Policies (%)` = "Scholarly output cited by policy documents (%)",
+        `Citing Policy Documents` = "Citing policy documents",
+        `Policy Citations` = "Policy citations",
+        `Policy Bodies` = "Policy bodies",
+        `Policy Body Countries` = "Policy body countries",
+        `Field-Normalized Policy Impact` = "Field-normalized policy impact"
+      ),
+      `Current value` = case_when(
+        str_detect(Metric, "%|impact") ~ scales::number(Value, accuracy = 0.1),
+        TRUE ~ scales::comma(Value, accuracy = 1)
+      )
+    ) %>%
+    select(Metric, `Current value`)
+
+  print(knitr::kable(
+    policy_summary_display,
+    align = c("l", "r"),
+    caption = "SciVal Policy Impact summary for the Shedd Conservation Research entity"
+  ))
+
+  if (nrow(policy_citing_documents) > 0) {
+    policy_document_locations <- policy_citing_documents %>%
+      distinct(
+        Title,
+        `Page Source Url`,
+        `PDF Document Url`,
+        Year,
+        `Full date`,
+        `Policy Body`,
+        `Policy Body Country/Region`,
+        `Policy Body Type`
+      ) %>%
+      count(`Policy Body Country/Region`, name = "documents", sort = TRUE) %>%
+      mutate(region = if_else(documents > 1, `Policy Body Country/Region`, "Other regions")) %>%
+      group_by(region) %>%
+      summarise(documents = sum(documents), .groups = "drop") %>%
+      arrange(desc(documents)) %>%
+      mutate(
+        region = factor(region, levels = region),
+        fraction = documents / sum(documents),
+        percent = scales::percent(fraction, accuracy = 0.1),
+        end = cumsum(fraction),
+        start = lag(end, default = 0),
+        mid = (start + end) / 2,
+        angle_start = pi / 2 - 2 * pi * start,
+        angle_end = pi / 2 - 2 * pi * end,
+        angle_mid = pi / 2 - 2 * pi * mid,
+        side = if_else(cos(angle_mid) >= 0, "right", "left"),
+        x0 = 1.02 * cos(angle_mid),
+        y0 = 1.02 * sin(angle_mid),
+        elbow_x = if_else(side == "right", 1.18, -1.18),
+        label_x = if_else(side == "right", 1.34, -1.34),
+        hjust = if_else(side == "right", 0, 1),
+        label = paste0(region, ": ", documents, " (", percent, ")")
+      ) %>%
+      group_by(side) %>%
+      mutate(label_y = spread_policy_labels(y0, min_gap = 0.17, lower = -1.12, upper = 1.12)) %>%
+      ungroup()
+
+    policy_location_wedges <- policy_document_locations %>%
+      rowwise() %>%
+      do({
+        theta <- seq(.$angle_start, .$angle_end, length.out = 100)
+
+        tibble(
+          region = .$region,
+          x = c(0, cos(theta), 0),
+          y = c(0, sin(theta), 0)
+        )
+      }) %>%
+      ungroup()
+
+    policy_location_palette <- c(
+      "#2C7FB8",
+      "#2CA25F",
+      "#F39C12",
+      "#6A7F2A",
+      "#D95F02",
+      "#756BB1",
+      "#E6550D",
+      "#31A354",
+      "#969696",
+      "#3182BD",
+      "#9E9AC8",
+      "#FD8D3C",
+      "#74C476",
+      "#8E44AD",
+      "#636363"
+    )
+    policy_location_palette <- rep(
+      policy_location_palette,
+      length.out = length(levels(policy_document_locations$region))
+    )
+    names(policy_location_palette) <- levels(policy_document_locations$region)
+
+    if ("Other regions" %in% names(policy_location_palette)) {
+      policy_location_palette[["Other regions"]] <- "#969696"
+    }
+
+    print(
+      ggplot() +
+        geom_polygon(
+          data = policy_location_wedges,
+          aes(x = x, y = y, group = region, fill = region),
+          color = "white",
+          linewidth = 0.9
+        ) +
+        geom_segment(
+          data = policy_document_locations,
+          aes(x = x0, y = y0, xend = elbow_x, yend = label_y),
+          color = "grey50",
+          linewidth = 0.3
+        ) +
+        geom_segment(
+          data = policy_document_locations,
+          aes(
+            x = elbow_x,
+            y = label_y,
+            xend = label_x - if_else(side == "right", 0.025, -0.025),
+            yend = label_y
+          ),
+          color = "grey50",
+          linewidth = 0.3
+        ) +
+        geom_text(
+          data = policy_document_locations,
+          aes(x = label_x, y = label_y, label = label, hjust = hjust),
+          size = 2.95,
+          color = "black"
+        ) +
+        coord_equal(xlim = c(-2.28, 2.28), ylim = c(-1.35, 1.35), clip = "off") +
+        scale_fill_manual(values = policy_location_palette, guide = "none") +
+        theme_void(base_size = 12) +
+        theme(
+          plot.title = element_text(face = "bold", hjust = 0, size = 16),
+          plot.subtitle = element_text(hjust = 0, color = "grey30", margin = margin(b = 10)),
+          plot.caption = element_text(color = "grey40", hjust = 0, margin = margin(t = 8)),
+          plot.margin = margin(14, 66, 14, 66)
+        ) +
+        labs(
+          title = "Citing Policy Documents by Country/Region",
+          subtitle = "Distinct policy documents in SciVal/Overton export; single-document regions grouped as Other",
+          caption = "Source: data/policy/Policies.csv"
+        )
+    )
+  }
+}
 ```
 
 ---
