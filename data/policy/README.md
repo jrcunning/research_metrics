@@ -3,9 +3,10 @@
 This folder holds the CSV exports from the SciVal Policy Impact section that
 are used in the report for the Haerther Center publication DOI set.
 
-The current report expects only these files:
+The current report expects these files:
 
 - `Summary_Metrics*.csv`
+- `Citing_Policy_Documents*.csv`
 - `Policies.csv`
 
 ## Quarterly Refresh Process
@@ -21,11 +22,11 @@ from the current DOI list.
 3. In SciVal, create or update a publication set/entity using the DOIs from
    `output/publication_dois.txt`.
 4. In the SciVal Policy Impact section for that DOI-based publication set,
-   download the summary metrics CSV and the citing policy document list as
-   `Policies.csv`.
-5. Place those two exported CSVs in this folder. Remove or archive older
-   matching summary exports if needed; the report uses the most recently
-   modified `Summary_Metrics*.csv` file.
+   download the summary metrics CSV, the citing policy documents annual CSV,
+   and the citing policy document list as `Policies.csv`.
+5. Place those three exported CSVs in this folder. Remove or archive older
+   matching summary or citing-document exports if needed; the report uses the
+   most recently modified matching file for those two export patterns.
 6. Knit `R/metrics.Rmd` again so the Policy Impact section reflects the new
    SciVal exports.
 

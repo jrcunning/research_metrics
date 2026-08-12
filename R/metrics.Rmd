@@ -316,7 +316,8 @@ read_scival_wide_table <- function(path) {
   data_lines <- data_lines[
     str_squish(data_lines) != "" &
       !str_detect(data_lines, "Elsevier B\\.V\\.")
-  ]
+  ] %>%
+    str_replace("^\\t+", "")
 
   read_csv(
     I(data_lines),
@@ -880,6 +881,7 @@ policy_documents_file <- file.path(policy_dir, "Policies.csv")
 
 policy_files <- c(
   summary = latest_matching_file(policy_dir, "^Summary_Metrics.*\\.csv$"),
+  citing_documents = latest_matching_file(policy_dir, "^Citing_Policy_Documents.*\\.csv$"),
   policies = if (file.exists(policy_documents_file)) policy_documents_file else NA_character_
 )
 
@@ -890,9 +892,11 @@ if (policy_enabled) {
     mutate(Export = "summary", File = basename(policy_files[["summary"]]), .before = Field)
 
   policy_summary_metrics <- read_scival_summary_metrics(policy_files[["summary"]])
+  policy_document_counts_series <- read_scival_series(policy_files[["citing_documents"]])
 } else {
   policy_metadata <- tibble(Export = character(), File = character(), Field = character(), Value = character())
   policy_summary_metrics <- tibble(Metric = character(), Value = numeric())
+  policy_document_counts_series <- tibble(Measure = character(), Period = character(), Value = numeric(), Year = integer())
 }
 
 policy_citing_documents <- if (!is.na(policy_files[["policies"]]) && file.exists(policy_files[["policies"]])) {
@@ -944,7 +948,7 @@ policy_source_audit <- if (policy_enabled) {
     paste(collapse = "; ")
 
   tibble(
-    DataFile = "data/policy/Summary_Metrics*.csv; data/policy/Policies.csv",
+    DataFile = "data/policy/Summary_Metrics*.csv; data/policy/Citing_Policy_Documents*.csv; data/policy/Policies.csv",
     DateRange = policy_year_ranges,
     Maintainer = "SciVal export (Shedd Conservation Research entity)",
     Entries = sum(!is.na(policy_files))
@@ -1440,7 +1444,7 @@ cite_quarterly_recent %>%
 
 # Policy Impact
 
-```{r policy-impact, results='asis', fig.width=10.5, fig.height=6.2, out.width='100%'}
+```{r policy-impact-summary, results='asis'}
 if (!policy_enabled) {
   cat("_No SciVal Policy Impact exports were found in `data/policy/`._")
 } else {
@@ -1487,8 +1491,59 @@ if (!policy_enabled) {
     align = c("l", "r"),
     caption = "SciVal Policy Impact summary for the Shedd Conservation Research entity"
   ))
+}
+```
 
-  if (nrow(policy_citing_documents) > 0) {
+```{r policy-impact-citing-documents}
+if (policy_enabled) {
+  policy_document_counts_annual <- policy_document_counts_series %>%
+    filter(Measure == "Citing Policy Documents", !is.na(Year), Year <= current_year) %>%
+    transmute(Year, Quantity = Value)
+
+  if (nrow(policy_document_counts_annual) > 0) {
+    policy_document_counts_annual <- policy_document_counts_annual %>%
+      complete(
+        Year = full_seq(range(Year, na.rm = TRUE), 1),
+        fill = list(Quantity = 0)
+      )
+
+    first_policy_document_year <- min(policy_document_counts_annual$Year[policy_document_counts_annual$Quantity > 0], na.rm = TRUE)
+
+    if (is.finite(first_policy_document_year)) {
+      policy_document_counts_annual <- policy_document_counts_annual %>%
+        filter(Year >= first_policy_document_year)
+    }
+
+    print(
+      policy_document_counts_annual %>%
+        mutate(PeriodStatus = if_else(Year == current_year, "Year to date", "Complete period")) %>%
+        ggplot(aes(x = Year, y = Quantity)) +
+        geom_col(aes(fill = PeriodStatus), alpha = 0.8) +
+        geom_text(
+          aes(label = ifelse(Quantity == 0, "", scales::comma(Quantity))),
+          color = "black",
+          vjust = -0.35,
+          size = 3
+        ) +
+        theme_custom() +
+        theme(legend.position = "bottom") +
+        scale_x_continuous(
+          breaks = seq(
+            min(policy_document_counts_annual$Year),
+            max(policy_document_counts_annual$Year),
+            by = 1
+          )
+        ) +
+        scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
+        scale_fill_manual(values = period_fill("citations")[c("Complete period", "Year to date")]) +
+        labs(x = "", y = "", title = "Citing Policy Documents by Year")
+    )
+  }
+}
+```
+
+```{r policy-impact-location, fig.width=8, fig.height=4}
+if (policy_enabled && nrow(policy_citing_documents) > 0) {
     policy_document_locations <- policy_citing_documents %>%
       distinct(
         Title,
@@ -1598,22 +1653,26 @@ if (!policy_enabled) {
           size = 2.95,
           color = "black"
         ) +
-        coord_equal(xlim = c(-2.28, 2.28), ylim = c(-1.35, 1.35), clip = "off") +
+        coord_equal(xlim = c(-3.47, 3.47), ylim = c(-1.28, 1.28), clip = "off") +
         scale_fill_manual(values = policy_location_palette, guide = "none") +
         theme_void(base_size = 12) +
         theme(
-          plot.title = element_text(face = "bold", hjust = 0, size = 16),
-          plot.subtitle = element_text(hjust = 0, color = "grey30", margin = margin(b = 10)),
-          plot.caption = element_text(color = "grey40", hjust = 0, margin = margin(t = 8)),
-          plot.margin = margin(14, 66, 14, 66)
+          text = element_text(family = report_font),
+          panel.border = element_rect(color = "#4D4D4D", fill = NA),
+          plot.title = element_text(
+            family = report_font,
+            face = "plain",
+            size = 16,
+            hjust = 0.5
+          ),
+          plot.subtitle = element_text(hjust = 0.5, color = "grey30", margin = margin(b = 10)),
+          plot.margin = margin(14, 6, 14, 40)
         ) +
         labs(
           title = "Citing Policy Documents by Country/Region",
-          subtitle = "Distinct policy documents in SciVal/Overton export; single-document regions grouped as Other",
-          caption = "Source: data/policy/Policies.csv"
+          subtitle = "Distinct policy documents in SciVal/Overton export; single-document regions grouped as Other"
         )
     )
-  }
 }
 ```
 
