@@ -2046,11 +2046,14 @@ ggplot(capacity_type_quarterly, aes(x = YearQuarter, y = CapacitySharingType, fi
 # Field Research
 
 ```{r field-research}
-field_days <- metrics %>%
+field_conservation_research_person_days <- metrics %>%
   filter(Category == "Field research") %>%
   group_by(Year, Quarter) %>%
-  summarise(Quantity = sum(FieldDays, na.rm = TRUE), .groups = "drop") %>%
-  bind_rows(filter(pre2019, Category == "Field research") %>% select(Year, Quarter, Quantity)) %>%
+  summarise(Quantity = sum(FieldConservationResearch, na.rm = TRUE), .groups = "drop") %>%
+  bind_rows(
+    filter(pre2019, Category == "Field research") %>%
+      transmute(Year, Quarter, Quantity = clean_number(Quantity))
+  ) %>%
   mutate(Quarter = factor(Quarter, levels = quarter_levels)) %>%
   complete(
     Year = full_seq(range(Year, na.rm = TRUE), 1),
@@ -2058,7 +2061,7 @@ field_days <- metrics %>%
     fill = list(Quantity = 0)
   )
 
-field_annual <- field_days %>%
+field_annual <- field_conservation_research_person_days %>%
   group_by(Year) %>%
   summarise(Quantity = sum(Quantity, na.rm = TRUE), .groups = "drop")
 
@@ -2099,13 +2102,13 @@ field_by_department <- metrics %>%
   ungroup() %>%
   mutate(Department = fct_reorder(Department, DepartmentTotal))
 
-field_recent_years <- field_days %>%
+field_recent_years <- field_conservation_research_person_days %>%
   distinct(Year) %>%
   arrange(desc(Year)) %>%
   slice_head(n = 5) %>%
   pull(Year)
 
-field_quarterly_recent <- field_days %>%
+field_quarterly_recent <- field_conservation_research_person_days %>%
   filter(Year %in% field_recent_years) %>%
   mutate(PeriodStatus = if_else(Year == current_year & Quarter == current_quarter, "Quarter to date", "Complete period"))
 
@@ -2124,7 +2127,7 @@ field_annual %>%
   scale_x_continuous(breaks = seq(min(field_annual$Year), max(field_annual$Year), by = 1)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
   scale_fill_manual(values = period_fill("field")[c("Complete period", "Year to date")]) +
-  labs(x = "", y = "", title = "Field Research Days")
+  labs(x = "", y = "", title = "Conservation Research Field Person-Days")
 
 field_quarterly_recent %>%
   ggplot(aes(x = Quarter, y = Quantity)) +
@@ -2140,7 +2143,7 @@ field_quarterly_recent %>%
   theme(legend.position = "bottom", axis.text.x = element_text(size = 7)) +
   scale_y_continuous(labels = scales::comma, expand = expansion(mult = c(0, 0.12))) +
   scale_fill_manual(values = period_fill("field")[c("Complete period", "Quarter to date")]) +
-  labs(x = "", y = "", title = "Quarterly Field Research Days, Most Recent 5 Years")
+  labs(x = "", y = "", title = "Quarterly Conservation Research Field Person-Days, Most Recent 5 Years")
 
 ggplot(field_by_department, aes(x = YearQuarter, y = Department, fill = PersonDays)) +
   geom_tile(color = "white", linewidth = 1) +
